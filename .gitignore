@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.log
+.pytest_cache/
+.mypy_cache/
+.idea/
+.vscode/
+training/checkpoints/
+training/data/real_episodes/*
+!training/data/real_episodes/.gitkeep

@@ -1,0 +1,3 @@
+checkpoints/
+data/real_episodes/*
+!data/real_episodes/.gitkeep

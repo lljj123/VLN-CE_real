@@ -1,0 +1,149 @@
+# 真实小车数据微调
+
+这里的采集和训练流程完全不使用 Habitat、Habitat-Sim、Matterport3D
+或虚拟环境。模型训练与小车推理共用 `vlnce_real/` 中同一套纯 PyTorch
+CMA 网络和同一个 checkpoint 词表。
+
+## 正确的数据含义
+
+每条训练样本必须是：
+
+```text
+英文导航指令
++ 动作执行前的同步 RGB
++ 动作执行前的 32FC1 米制 Depth
++ 人工/遥控器/可信控制器给出的专家动作
+```
+
+专家动作只能是：
+
+```text
+STOP
+MOVE_FORWARD
+TURN_LEFT
+TURN_RIGHT
+```
+
+不能把模型发布的 `/vln/action` 当标签，否则模型只是在学习自己的错误。
+采集器默认只接受独立的 `/vln/expert_action`。
+
+## 1. 采集一条真实轨迹
+
+先启动 ROS Master、深度相机和真实小车的人工/遥控控制程序，然后执行：
+
+```bash
+cd /path/to/VLN-CE_real
+VLN_INSTRUCTION="Go forward and turn left." \
+VLN_EPISODE_ID="room01_run01" \
+VLN_DATA_SPLIT="train" \
+./training/start_record_real_episode.sh
+```
+
+小车每准备执行一个人工动作时，在动作执行前发布对应标签：
+
+```bash
+rostopic pub -1 /vln/expert_action std_msgs/String "data: 'MOVE_FORWARD'"
+rostopic pub -1 /vln/expert_action std_msgs/String "data: 'TURN_LEFT'"
+rostopic pub -1 /vln/expert_action std_msgs/String "data: 'STOP'"
+```
+
+每个标签会保存它之前最近的一对同步 RGB-D。`STOP` 会保存最后一帧并结束
+该 episode。标签发布和真正的小车控制应由同一个人工控制程序协调；
+上面的 `rostopic pub` 只演示标签格式，本身不会驱动电机。
+
+采集结果：
+
+```text
+training/data/real_episodes/train/room01_run01/
+├── episode.json
+├── rgb/000000.jpg
+└── depth/000000.npy
+```
+
+`episode.json` 保存指令、动作顺序、时间戳、RGB/Depth 同步误差和无效深度
+比例。RGB 保存为 BGR JPEG，Depth 保存为 float32 米制 NPY。
+
+## 2. 单独采集验证集
+
+不要把同一条路线的相邻片段随机拆成训练和验证数据。换一个 episode，
+最好换路线或场景：
+
+```bash
+VLN_INSTRUCTION="Turn right and stop by the chair." \
+VLN_EPISODE_ID="room02_val01" \
+VLN_DATA_SPLIT="val" \
+./training/start_record_real_episode.sh
+```
+
+## 3. 离线微调
+
+建议把采集目录复制到有 NVIDIA GPU 的训练机上运行；训练数据来自真实
+小车，但训练计算不必占用小车。训练机也不需要 Habitat：
+
+```bash
+cd /path/to/VLN-CE_real
+./training/start_finetune_real.sh
+```
+
+默认参数：
+
+```text
+10 epochs
+batch size 2
+连续 8 步序列
+learning rate 1e-5
+冻结 RGB/Depth ResNet 和词嵌入
+训练 CMA 注意力、RNN 和动作分类头
+```
+
+默认冻结视觉编码器是为了降低显存和小数据过拟合风险。数据足够多后可：
+
+```bash
+./training/start_finetune_real.sh --train-visual-encoders
+```
+
+可选类别平衡：
+
+```bash
+./training/start_finetune_real.sh --class-balance
+```
+
+输出：
+
+```text
+training/checkpoints/real_cma/
+├── best_robot.pth
+├── latest_robot.pth
+└── latest_training.pth
+```
+
+`best_robot.pth` 可直接被小车加载；`latest_training.pth` 额外保存优化器
+状态，用于继续训练：
+
+```bash
+VLN_TRAIN_EPOCHS=20 ./training/start_finetune_real.sh \
+  --resume training/checkpoints/real_cma/latest_training.pth
+```
+
+`VLN_TRAIN_EPOCHS` 表示最终 epoch 编号，不是额外增加的轮数；例如已经完成
+10 轮，要再训练 10 轮就设为 20。
+
+## 4. 测试微调权重
+
+```bash
+VLN_CHECKPOINT=training/checkpoints/real_cma/best_robot.pth \
+./scripts/start_vln_real.sh
+```
+
+先在架空轮、低速或安全区域测试。确认验证路线效果优于原权重后，再替换
+默认 checkpoint。
+
+## 文件职责
+
+```text
+ros_record_real_episode.py  ROS RGB-D/专家动作轨迹采集
+real_dataset.py             episode 校验、预处理和连续序列装载
+finetune_real_cma.py        纯 PyTorch 行为克隆微调
+start_record_real_episode.sh  一键启动深度处理与采集
+start_finetune_real.sh        一键启动离线微调
+```
