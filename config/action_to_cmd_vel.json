@@ -1,0 +1,25 @@
+{
+  "topics": {
+    "action": "/vln/action",
+    "cmd_vel": "/cmd_vel"
+  },
+  "control": {
+    "publish_rate_hz": 20.0,
+    "watchdog_timeout_s": 10.0,
+    "stop_publish_count": 3
+  },
+  "actions": {
+    "MOVE_FORWARD": {
+      "linear_speed_mps": 0.10,
+      "distance_m": 0.25
+    },
+    "TURN_LEFT": {
+      "angular_speed_radps": 0.30,
+      "angle_deg": 15.0
+    },
+    "TURN_RIGHT": {
+      "angular_speed_radps": 0.30,
+      "angle_deg": 15.0
+    }
+  }
+}

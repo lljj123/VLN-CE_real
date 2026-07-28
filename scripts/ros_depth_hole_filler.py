@@ -268,9 +268,9 @@ class DepthHoleFillerNode:
                 return
 
             self.frame_count += 1
-            if (
-                self.frame_count == 1
-                or self.frame_count % self.args.log_every == 0
+            if self.frame_count == 1 or (
+                self.args.log_every > 0
+                and self.frame_count % self.args.log_every == 0
             ):
                 rospy.loginfo(
                     "depth_frame=%d encoding=%s->32FC1(m) "
@@ -360,7 +360,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--log-every",
         type=int,
         default=30,
-        help="Log depth statistics every N processed frames.",
+        help="Log every N frames; use 0 to disable periodic statistics.",
     )
     parser.add_argument(
         "--max-frames",
@@ -387,8 +387,8 @@ def validate_arguments(args) -> None:
         raise ValueError("--hole-fill-max-area must be >= 0.")
     if args.subscriber_buffer_bytes <= 0:
         raise ValueError("--subscriber-buffer-bytes must be positive.")
-    if args.log_every <= 0:
-        raise ValueError("--log-every must be positive.")
+    if args.log_every < 0:
+        raise ValueError("--log-every must be >= 0.")
     if args.max_frames < 0:
         raise ValueError("--max-frames must be >= 0.")
 

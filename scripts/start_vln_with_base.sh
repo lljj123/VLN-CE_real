@@ -6,17 +6,12 @@
 set -Eeuo pipefail
 
 VLN_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+VLN_REPO_ROOT="$(cd -- "${VLN_SCRIPT_DIR}/.." && pwd)"
 VLN_ROS_SETUP="${VLN_ROS_SETUP:-/opt/ros/noetic/setup.bash}"
 VLN_CONTROL_PYTHON="${VLN_PYTHON:-/usr/bin/python3}"
 
 VLN_ACTION_TOPIC="${VLN_ACTION_TOPIC:-/vln/action}"
-VLN_CMD_VEL_TOPIC="${VLN_CMD_VEL_TOPIC:-/cmd_vel}"
-VLN_LINEAR_SPEED="${VLN_LINEAR_SPEED:-0.10}"
-VLN_ANGULAR_SPEED="${VLN_ANGULAR_SPEED:-0.30}"
-VLN_FORWARD_DISTANCE="${VLN_FORWARD_DISTANCE:-0.25}"
-VLN_TURN_ANGLE_DEG="${VLN_TURN_ANGLE_DEG:-15.0}"
-VLN_CMD_RATE="${VLN_CMD_RATE:-20.0}"
-VLN_ACTION_WATCHDOG="${VLN_ACTION_WATCHDOG:-10.0}"
+VLN_ACTION_CONFIG="${VLN_ACTION_CONFIG:-${VLN_REPO_ROOT}/config/action_to_cmd_vel.json}"
 VLN_CONVERTER_PID=""
 VLN_INFERENCE_PID=""
 
@@ -64,18 +59,35 @@ if rosnode info /ros_vln_action_to_cmd_vel 2>/dev/null \
 fi
 
 echo "[start_vln_with_base] Starting action converter:"
-echo "  ${VLN_ACTION_TOPIC} -> ${VLN_CMD_VEL_TOPIC}"
-echo "  forward: ${VLN_FORWARD_DISTANCE} m at ${VLN_LINEAR_SPEED} m/s"
-echo "  turn: ${VLN_TURN_ANGLE_DEG} deg at ${VLN_ANGULAR_SPEED} rad/s"
-"${VLN_CONTROL_PYTHON}" "${VLN_SCRIPT_DIR}/ros_action_to_cmd_vel.py" \
-    --action-topic "${VLN_ACTION_TOPIC}" \
-    --cmd-vel-topic "${VLN_CMD_VEL_TOPIC}" \
-    --linear-speed "${VLN_LINEAR_SPEED}" \
-    --angular-speed "${VLN_ANGULAR_SPEED}" \
-    --forward-distance "${VLN_FORWARD_DISTANCE}" \
-    --turn-angle-deg "${VLN_TURN_ANGLE_DEG}" \
-    --publish-rate "${VLN_CMD_RATE}" \
-    --watchdog-timeout "${VLN_ACTION_WATCHDOG}" &
+echo "  config: ${VLN_ACTION_CONFIG}"
+echo "  action topic: ${VLN_ACTION_TOPIC}"
+VLN_CONVERTER_ARGS=(
+    "${VLN_SCRIPT_DIR}/ros_action_to_cmd_vel.py"
+    --config "${VLN_ACTION_CONFIG}"
+    --action-topic "${VLN_ACTION_TOPIC}"
+)
+if [[ -n "${VLN_CMD_VEL_TOPIC:-}" ]]; then
+    VLN_CONVERTER_ARGS+=(--cmd-vel-topic "${VLN_CMD_VEL_TOPIC}")
+fi
+if [[ -n "${VLN_LINEAR_SPEED:-}" ]]; then
+    VLN_CONVERTER_ARGS+=(--linear-speed "${VLN_LINEAR_SPEED}")
+fi
+if [[ -n "${VLN_ANGULAR_SPEED:-}" ]]; then
+    VLN_CONVERTER_ARGS+=(--angular-speed "${VLN_ANGULAR_SPEED}")
+fi
+if [[ -n "${VLN_FORWARD_DISTANCE:-}" ]]; then
+    VLN_CONVERTER_ARGS+=(--forward-distance "${VLN_FORWARD_DISTANCE}")
+fi
+if [[ -n "${VLN_TURN_ANGLE_DEG:-}" ]]; then
+    VLN_CONVERTER_ARGS+=(--turn-angle-deg "${VLN_TURN_ANGLE_DEG}")
+fi
+if [[ -n "${VLN_CMD_RATE:-}" ]]; then
+    VLN_CONVERTER_ARGS+=(--publish-rate "${VLN_CMD_RATE}")
+fi
+if [[ -n "${VLN_ACTION_WATCHDOG:-}" ]]; then
+    VLN_CONVERTER_ARGS+=(--watchdog-timeout "${VLN_ACTION_WATCHDOG}")
+fi
+"${VLN_CONTROL_PYTHON}" "${VLN_CONVERTER_ARGS[@]}" &
 VLN_CONVERTER_PID=$!
 
 sleep 0.5

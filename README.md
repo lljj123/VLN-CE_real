@@ -104,7 +104,9 @@ cd /path/to/VLN-CE_real
 ```
 
 转换节点订阅 `/vln/action` 的英文动作，并以 20 Hz 连续发布
-`geometry_msgs/Twist`。默认映射如下：
+`geometry_msgs/Twist`。速度和动作尺度集中保存在
+[`config/action_to_cmd_vel.json`](config/action_to_cmd_vel.json)，左右转可以
+分别标定。默认映射如下：
 
 ```text
 STOP          -> linear.x = 0,    angular.z = 0
@@ -114,7 +116,18 @@ TURN_RIGHT    -> linear.x = 0,    angular.z = -0.30，执行到约 15° 后停�
 ```
 
 正 `angular.z` 表示左转，负值表示右转。距离和角度目前使用“速度 × 时间”开环
-计算，轮胎打滑和底盘加减速会产生误差，因此必须在真车上标定。例如：
+计算，轮胎打滑和底盘加减速会产生误差，因此必须在真车上标定。通常只需修改：
+
+```text
+MOVE_FORWARD.linear_speed_mps   前进线速度，单位 m/s
+MOVE_FORWARD.distance_m         每个前进动作的距离，单位 m
+TURN_LEFT.angular_speed_radps   左转角速度，单位 rad/s
+TURN_LEFT.angle_deg             每个左转动作的角度，单位度
+TURN_RIGHT.angular_speed_radps  右转角速度绝对值，单位 rad/s
+TURN_RIGHT.angle_deg            每个右转动作的角度，单位度
+```
+
+联合脚本默认读取该文件。以下环境变量仍可在本次启动时临时覆盖配置：
 
 ```bash
 VLN_CMD_VEL_TOPIC=/mobile_base/cmd_vel \
@@ -128,7 +141,21 @@ VLN_TURN_ANGLE_DEG=10 \
 只启动转换节点进行独立测试：
 
 ```bash
-./scripts/ros_action_to_cmd_vel.py --linear-speed 0.05
+cd /path/to/VLN-CE_real
+python3 scripts/ros_action_to_cmd_vel.py
+```
+
+它会自动读取默认配置文件。也可以指定另一份配置：
+
+```bash
+python3 scripts/ros_action_to_cmd_vel.py \
+  --config config/action_to_cmd_vel.json
+```
+
+单独启动这个 Python 节点不会启动相机和 CMA；需要 ROS Master 已运行，而且
+`/vln/action` 已由 VLN 推理节点或其他程序发布。可用下面的命令手动测试：
+
+```bash
 rostopic pub -1 /vln/action std_msgs/String 'data: "MOVE_FORWARD"'
 ```
 
@@ -138,6 +165,7 @@ rostopic pub -1 /vln/action std_msgs/String 'data: "MOVE_FORWARD"'
 
 ```text
 data/checkpoints/CMA_PM_DA_Aug_robot.pth  权重、R2R 词表和动作元数据
+config/action_to_cmd_vel.json              底盘速度、距离和转角配置
 vlnce_real/                               独立 PyTorch CMA 网络
 scripts/ros_depth_hole_filler.py          深度单位转换与小孔洞填充
 scripts/ros_vln_inference.py              RGB-D 同步、推理和动作发布

@@ -11,12 +11,18 @@ actual chassis.
 
 import argparse
 import glob
+import json
 import math
 import os
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import NamedTuple
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "action_to_cmd_vel.json"
 
 
 def add_ros_python_paths() -> None:
@@ -59,6 +65,15 @@ class Motion(NamedTuple):
     duration: float
 
 
+class MotionSettings(NamedTuple):
+    forward_linear_speed: float
+    forward_distance: float
+    left_angular_speed: float
+    left_angle_deg: float
+    right_angular_speed: float
+    right_angle_deg: float
+
+
 def normalize_action(action: str) -> str:
     """Normalize harmless case, whitespace, and hyphen differences."""
 
@@ -67,10 +82,7 @@ def normalize_action(action: str) -> str:
 
 def action_to_motion(
     action: str,
-    linear_speed: float,
-    angular_speed: float,
-    forward_distance: float,
-    turn_angle_deg: float,
+    settings: MotionSettings,
 ) -> Motion:
     """Return the velocity and open-loop duration for one VLN action."""
 
@@ -81,16 +93,133 @@ def action_to_motion(
         return Motion(0.0, 0.0, 0.0)
     if action == "MOVE_FORWARD":
         return Motion(
-            linear_speed,
+            settings.forward_linear_speed,
             0.0,
-            forward_distance / linear_speed,
+            settings.forward_distance / settings.forward_linear_speed,
         )
 
-    angular_z = angular_speed if action == "TURN_LEFT" else -angular_speed
+    if action == "TURN_LEFT":
+        angular_speed = settings.left_angular_speed
+        angle_deg = settings.left_angle_deg
+        angular_z = angular_speed
+    else:
+        angular_speed = settings.right_angular_speed
+        angle_deg = settings.right_angle_deg
+        angular_z = -angular_speed
     return Motion(
         0.0,
         angular_z,
-        math.radians(turn_angle_deg) / angular_speed,
+        math.radians(angle_deg) / angular_speed,
+    )
+
+
+def resolve_config_path(path_text: str) -> Path:
+    path = Path(path_text).expanduser()
+    if not path.is_absolute():
+        path = REPO_ROOT / path
+    return path.resolve()
+
+
+def _section(mapping, name: str):
+    value = mapping.get(name, {})
+    if not isinstance(value, dict):
+        raise ValueError(
+            "Configuration section {!r} must be an object.".format(name)
+        )
+    return value
+
+
+def _first_not_none(*values):
+    for value in values:
+        if value is not None:
+            return value
+    raise RuntimeError("No configuration value or fallback was supplied.")
+
+
+def load_configuration(args) -> None:
+    """Load JSON defaults, then apply any explicit command-line overrides."""
+
+    config_path = resolve_config_path(args.config)
+    try:
+        with config_path.open("r", encoding="utf-8") as config_file:
+            config = json.load(config_file)
+    except OSError as error:
+        raise ValueError(
+            "Cannot read configuration {}: {}".format(config_path, error)
+        )
+    except ValueError as error:
+        raise ValueError(
+            "Invalid JSON in configuration {}: {}".format(config_path, error)
+        )
+    if not isinstance(config, dict):
+        raise ValueError("The configuration root must be a JSON object.")
+
+    topics = _section(config, "topics")
+    control = _section(config, "control")
+    actions = _section(config, "actions")
+    forward = _section(actions, "MOVE_FORWARD")
+    turn_left = _section(actions, "TURN_LEFT")
+    turn_right = _section(actions, "TURN_RIGHT")
+
+    args.config_path = str(config_path)
+    args.action_topic = _first_not_none(
+        args.action_topic,
+        topics.get("action"),
+        "/vln/action",
+    )
+    args.cmd_vel_topic = _first_not_none(
+        args.cmd_vel_topic,
+        topics.get("cmd_vel"),
+        "/cmd_vel",
+    )
+    args.publish_rate = _first_not_none(
+        args.publish_rate,
+        control.get("publish_rate_hz"),
+        20.0,
+    )
+    args.watchdog_timeout = _first_not_none(
+        args.watchdog_timeout,
+        control.get("watchdog_timeout_s"),
+        10.0,
+    )
+    args.stop_publish_count = _first_not_none(
+        args.stop_publish_count,
+        control.get("stop_publish_count"),
+        3,
+    )
+    args.linear_speed = _first_not_none(
+        args.linear_speed,
+        forward.get("linear_speed_mps"),
+        0.10,
+    )
+    args.forward_distance = _first_not_none(
+        args.forward_distance,
+        forward.get("distance_m"),
+        0.25,
+    )
+    args.left_angular_speed = _first_not_none(
+        args.left_angular_speed,
+        args.shared_angular_speed,
+        turn_left.get("angular_speed_radps"),
+        0.30,
+    )
+    args.right_angular_speed = _first_not_none(
+        args.right_angular_speed,
+        args.shared_angular_speed,
+        turn_right.get("angular_speed_radps"),
+        0.30,
+    )
+    args.left_turn_angle_deg = _first_not_none(
+        args.left_turn_angle_deg,
+        args.shared_turn_angle_deg,
+        turn_left.get("angle_deg"),
+        15.0,
+    )
+    args.right_turn_angle_deg = _first_not_none(
+        args.right_turn_angle_deg,
+        args.shared_turn_angle_deg,
+        turn_right.get("angle_deg"),
+        15.0,
     )
 
 
@@ -106,6 +235,14 @@ class ActionToCmdVelNode:
 
     def __init__(self, args) -> None:
         self.args = args
+        self.motion_settings = MotionSettings(
+            forward_linear_speed=args.linear_speed,
+            forward_distance=args.forward_distance,
+            left_angular_speed=args.left_angular_speed,
+            left_angle_deg=args.left_turn_angle_deg,
+            right_angular_speed=args.right_angular_speed,
+            right_angle_deg=args.right_turn_angle_deg,
+        )
         self.lock = threading.Lock()
         self.pending_action = "STOP"
         self.pending_sequence = 0
@@ -177,10 +314,7 @@ class ActionToCmdVelNode:
 
         motion = action_to_motion(
             action=action,
-            linear_speed=self.args.linear_speed,
-            angular_speed=self.args.angular_speed,
-            forward_distance=self.args.forward_distance,
-            turn_angle_deg=self.args.turn_angle_deg,
+            settings=self.motion_settings,
         )
         self.active_action = action
         self.active_motion = motion
@@ -207,14 +341,19 @@ class ActionToCmdVelNode:
     def run(self) -> None:
         rospy.loginfo(
             "Action converter ready: %s (std_msgs/String) -> %s "
-            "(geometry_msgs/Twist); forward=%.3f m at %.3f m/s; "
-            "turn=%.2f deg at %.3f rad/s; rate=%.1f Hz",
+            "(geometry_msgs/Twist); config=%s; "
+            "forward=%.3f m at %.3f m/s; "
+            "left=%.2f deg at %.3f rad/s; "
+            "right=%.2f deg at %.3f rad/s; rate=%.1f Hz",
             self.args.action_topic,
             self.args.cmd_vel_topic,
+            self.args.config_path,
             self.args.forward_distance,
             self.args.linear_speed,
-            self.args.turn_angle_deg,
-            self.args.angular_speed,
+            self.args.left_turn_angle_deg,
+            self.args.left_angular_speed,
+            self.args.right_turn_angle_deg,
+            self.args.right_angular_speed,
             self.args.publish_rate,
         )
         rate = rospy.Rate(self.args.publish_rate)
@@ -272,25 +411,50 @@ class ActionToCmdVelNode:
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Convert VLN English actions to time-bounded ROS1 Twist commands."
+        description=(
+            "Convert VLN English actions to time-bounded ROS1 Twist "
+            "commands."
+        )
     )
-    parser.add_argument("--action-topic", default="/vln/action")
-    parser.add_argument("--cmd-vel-topic", default="/cmd_vel")
-    parser.add_argument("--linear-speed", type=float, default=0.10)
-    parser.add_argument("--angular-speed", type=float, default=0.30)
-    parser.add_argument("--forward-distance", type=float, default=0.25)
-    parser.add_argument("--turn-angle-deg", type=float, default=15.0)
-    parser.add_argument("--publish-rate", type=float, default=20.0)
+    parser.add_argument(
+        "--config",
+        default=str(DEFAULT_CONFIG_PATH),
+        help=(
+            "JSON configuration file; relative paths resolve from the "
+            "repository."
+        ),
+    )
+    parser.add_argument("--action-topic")
+    parser.add_argument("--cmd-vel-topic")
+    parser.add_argument("--linear-speed", type=float)
+    parser.add_argument("--forward-distance", type=float)
+    parser.add_argument(
+        "--angular-speed",
+        dest="shared_angular_speed",
+        type=float,
+        help="Override both left and right angular speeds.",
+    )
+    parser.add_argument(
+        "--turn-angle-deg",
+        dest="shared_turn_angle_deg",
+        type=float,
+        help="Override both left and right turn angles.",
+    )
+    parser.add_argument("--left-angular-speed", type=float)
+    parser.add_argument("--right-angular-speed", type=float)
+    parser.add_argument("--left-turn-angle-deg", type=float)
+    parser.add_argument("--right-turn-angle-deg", type=float)
+    parser.add_argument("--publish-rate", type=float)
     parser.add_argument(
         "--watchdog-timeout",
         type=float,
-        default=10.0,
+        default=None,
         help="Stop an active command after this action-input silence; 0 disables.",
     )
     parser.add_argument(
         "--stop-publish-count",
         type=int,
-        default=3,
+        default=None,
         help="Number of redundant zero Twist messages sent when stopping.",
     )
     parser.add_argument("--node-name", default="ros_vln_action_to_cmd_vel")
@@ -298,26 +462,49 @@ def build_argument_parser() -> argparse.ArgumentParser:
 
 
 def validate_arguments(args) -> None:
-    if args.linear_speed <= 0.0:
-        raise ValueError("--linear-speed must be positive.")
-    if args.angular_speed <= 0.0:
-        raise ValueError("--angular-speed must be positive.")
-    if args.forward_distance <= 0.0:
-        raise ValueError("--forward-distance must be positive.")
-    if args.turn_angle_deg <= 0.0:
-        raise ValueError("--turn-angle-deg must be positive.")
-    if args.publish_rate <= 0.0:
-        raise ValueError("--publish-rate must be positive.")
-    if args.watchdog_timeout < 0.0:
-        raise ValueError("--watchdog-timeout must be >= 0.")
-    if args.stop_publish_count <= 0:
-        raise ValueError("--stop-publish-count must be positive.")
+    if not isinstance(args.action_topic, str) or not args.action_topic.strip():
+        raise ValueError("action topic must be a non-empty string.")
+    if not isinstance(args.cmd_vel_topic, str) or not args.cmd_vel_topic.strip():
+        raise ValueError("cmd_vel topic must be a non-empty string.")
+
+    positive_values = (
+        ("linear speed", args.linear_speed),
+        ("forward distance", args.forward_distance),
+        ("left angular speed", args.left_angular_speed),
+        ("right angular speed", args.right_angular_speed),
+        ("left turn angle", args.left_turn_angle_deg),
+        ("right turn angle", args.right_turn_angle_deg),
+        ("publish rate", args.publish_rate),
+    )
+    for name, value in positive_values:
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(float(value))
+            or value <= 0.0
+        ):
+            raise ValueError("{} must be a positive finite number.".format(name))
+
+    if (
+        isinstance(args.watchdog_timeout, bool)
+        or not isinstance(args.watchdog_timeout, (int, float))
+        or not math.isfinite(float(args.watchdog_timeout))
+        or args.watchdog_timeout < 0.0
+    ):
+        raise ValueError("watchdog timeout must be a finite number >= 0.")
+    if (
+        isinstance(args.stop_publish_count, bool)
+        or not isinstance(args.stop_publish_count, int)
+        or args.stop_publish_count <= 0
+    ):
+        raise ValueError("stop publish count must be a positive integer.")
 
 
 def main() -> int:
     parser = build_argument_parser()
     args = parser.parse_args(rospy.myargv(argv=sys.argv)[1:])
     try:
+        load_configuration(args)
         validate_arguments(args)
     except ValueError as error:
         parser.error(str(error))
