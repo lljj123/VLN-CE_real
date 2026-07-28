@@ -5,11 +5,7 @@ set -Eeuo pipefail
 VLN_SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 VLN_REPO_ROOT="$(cd -- "${VLN_SCRIPT_DIR}/.." && pwd)"
 if [[ -z "${VLN_PYTHON:-}" ]]; then
-    if [[ -x "${HOME}/.local/share/mamba/envs/vlnce_real/bin/python" ]]; then
-        VLN_PYTHON="${HOME}/.local/share/mamba/envs/vlnce_real/bin/python"
-    else
-        VLN_PYTHON="${HOME}/.local/share/mamba/envs/vlnce/bin/python"
-    fi
+    VLN_PYTHON="/usr/bin/python3"
 fi
 VLN_ROS_SETUP="${VLN_ROS_SETUP:-/opt/ros/noetic/setup.bash}"
 
@@ -24,6 +20,7 @@ VLN_PUBLISHER_WAIT="${VLN_PUBLISHER_WAIT:-5.0}"
 VLN_STARTUP_TIMEOUT="${VLN_STARTUP_TIMEOUT:-20}"
 VLN_FORCE_CPU="${VLN_FORCE_CPU:-0}"
 VLN_CHECKPOINT="${VLN_CHECKPOINT:-data/checkpoints/CMA_PM_DA_Aug_robot.pth}"
+VLN_DEPTH_LOG_EVERY="${VLN_DEPTH_LOG_EVERY:-0}"
 
 VLN_DEPTH_RAW_TOPIC="/camera/depth_registered/image_raw"
 VLN_DEPTH_FILLED_TOPIC="/camera/depth_registered/image_filled"
@@ -71,8 +68,13 @@ if [[ ! -x "${VLN_PYTHON}" ]]; then
     exit 1
 fi
 
+# ROS Noetic's setup scripts are not safe under Bash nounset when a clean
+# terminal has not inherited ROS_DISTRO yet. Temporarily disable nounset only
+# while loading ROS, then restore the launcher's strict mode.
+set +u
 # shellcheck disable=SC1091
 source "${VLN_ROS_SETUP}"
+set -u
 
 if ! "${VLN_PYTHON}" -c \
     'import cv2, message_filters, numpy, rospy, torch; import cv_bridge' \
@@ -92,12 +94,16 @@ cd "${VLN_REPO_ROOT}"
 
 echo "[start_vln_real] Starting depth preprocessing:"
 echo "  ${VLN_DEPTH_RAW_TOPIC} -> ${VLN_DEPTH_FILLED_TOPIC}"
-if rosnode ping -c 1 /ros_depth_hole_filler >/dev/null 2>&1; then
+# rosnode commands return status 0 even for an unknown node on Noetic.
+# A live rospy node's rosnode-info output contains its process ID.
+if rosnode info /ros_depth_hole_filler 2>/dev/null \
+    | grep -Eq '^Pid: [0-9]+$'; then
     echo "[start_vln_real] Reusing existing /ros_depth_hole_filler node."
 else
     "${VLN_PYTHON}" "${VLN_SCRIPT_DIR}/ros_depth_hole_filler.py" \
         --input-topic "${VLN_DEPTH_RAW_TOPIC}" \
-        --output-topic "${VLN_DEPTH_FILLED_TOPIC}" &
+        --output-topic "${VLN_DEPTH_FILLED_TOPIC}" \
+        --log-every "${VLN_DEPTH_LOG_EVERY}" &
     VLN_DEPTH_PID=$!
 fi
 
