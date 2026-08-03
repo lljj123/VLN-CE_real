@@ -27,7 +27,53 @@ TURN_RIGHT
 不能把模型发布的 `/vln/action` 当标签，否则模型只是在学习自己的错误。
 采集器默认只接受独立的 `/vln/expert_action`。
 
-## 1. 采集一条真实轨迹
+## 1. 专家键盘采集并自动驱动底盘（推荐）
+
+先启动 ROS Master、深度相机和底盘驱动，并停止 VLN 推理节点及
+`ros_action_to_cmd_vel.py`，避免多个节点同时控制 `/cmd_vel`。先编辑：
+
+```text
+config/expert_collection.json
+```
+
+其中 `instruction` 是本批 episode 使用的英文导航指令，`topics` 配置
+RGB、Depth、CameraInfo、专家动作和底盘话题。然后每条轨迹只需执行：
+
+```bash
+cd /path/to/VLN-CE_real
+./training/start_expert_collection.sh
+```
+
+一次启动采集一个 episode，按 `s` 正常结束。采集同一路线多遍时，再次执行
+同一条脚本即可；它会用配置中的 `episode_prefix` 和当前时间自动生成新目录，
+不会覆盖前一次数据。临时改变设置时仍可使用 `--instruction`、
+`--episode-id` 或 `--split val` 覆盖配置文件。
+
+程序收到同步 RGB-D 并检测到 `/cmd_vel` 有底盘订阅者后，会显示：
+
+```text
+w = 保存当前帧和 MOVE_FORWARD 标签，然后底盘前进一步
+a = 保存当前帧和 TURN_LEFT 标签，然后底盘左转一次
+d = 保存当前帧和 TURN_RIGHT 标签，然后底盘右转一次
+s = 保存当前帧和 STOP 标签，停车并正常完成 episode
+q = 紧急停车并放弃 episode
+```
+
+每次输入需要按 Enter。保存图像成功之后才会启动底盘；动作执行完并发送
+零速度后才允许输入下一步。速度、前进距离和转向角度直接读取
+`config/action_to_cmd_vel.json`。
+
+第一次应使用架空轮或空旷安全区域验证。只测试采集、不让底盘运动：
+
+```bash
+./training/start_expert_collection.sh \
+  --episode-id dry_run_001 --split train --dry-run
+```
+
+完整格式见 `training/DATASET_FORMAT.md`。采集器保存原始分辨率 RGB 和
+Depth，不会把当前可能畸变的正方形 resize 结果永久写入数据集。
+
+## 2. 通过外部专家动作话题采集
 
 先启动 ROS Master、深度相机和真实小车的人工/遥控控制程序，然后执行：
 
@@ -63,7 +109,7 @@ training/data/real_episodes/train/room01_run01/
 `episode.json` 保存指令、动作顺序、时间戳、RGB/Depth 同步误差和无效深度
 比例。RGB 保存为 BGR JPEG，Depth 保存为 float32 米制 NPY。
 
-## 2. 单独采集验证集
+## 3. 单独采集验证集
 
 不要把同一条路线的相邻片段随机拆成训练和验证数据。换一个 episode，
 最好换路线或场景：
@@ -75,7 +121,7 @@ VLN_DATA_SPLIT="val" \
 ./training/start_record_real_episode.sh
 ```
 
-## 3. 离线微调
+## 4. 离线微调
 
 建议把采集目录复制到有 NVIDIA GPU 的训练机上运行；训练数据来自真实
 小车，但训练计算不必占用小车。训练机也不需要 Habitat：
@@ -128,7 +174,7 @@ VLN_TRAIN_EPOCHS=20 ./training/start_finetune_real.sh \
 `VLN_TRAIN_EPOCHS` 表示最终 epoch 编号，不是额外增加的轮数；例如已经完成
 10 轮，要再训练 10 轮就设为 20。
 
-## 4. 测试微调权重
+## 5. 测试微调权重
 
 ```bash
 VLN_CHECKPOINT=training/checkpoints/real_cma/best_robot.pth \
@@ -142,8 +188,10 @@ VLN_CHECKPOINT=training/checkpoints/real_cma/best_robot.pth \
 
 ```text
 ros_record_real_episode.py  ROS RGB-D/专家动作轨迹采集
+ros_expert_drive_collector.py  键盘专家采集并自动执行底盘动作
 real_dataset.py             episode 校验、预处理和连续序列装载
 finetune_real_cma.py        纯 PyTorch 行为克隆微调
 start_record_real_episode.sh  一键启动深度处理与采集
+start_expert_collection.sh  一键启动键盘专家采集与底盘控制
 start_finetune_real.sh        一键启动离线微调
 ```

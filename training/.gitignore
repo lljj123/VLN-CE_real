@@ -1,3 +1,9 @@
 checkpoints/
 data/real_episodes/*
 !data/real_episodes/.gitkeep
+!data/real_episodes/train/
+!data/real_episodes/val/
+data/real_episodes/train/*
+data/real_episodes/val/*
+!data/real_episodes/train/.gitkeep
+!data/real_episodes/val/.gitkeep

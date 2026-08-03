@@ -1,7 +1,7 @@
 {
   "topics": {
     "action": "/vln/action",
-    "cmd_vel": "/cmd_vel"
+    "cmd_vel": "/cmd_vel_mux/input/teleop"
   },
   "control": {
     "publish_rate_hz": 20.0,

@@ -403,7 +403,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--rgb-topic",
-        default="/camera/rgb/image_color",
+        default="/camera/rgb/image_raw",
         help="ROS sensor_msgs/Image RGB topic.",
     )
     parser.add_argument(

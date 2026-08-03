@@ -10,7 +10,6 @@ VLN_REPO_ROOT="$(cd -- "${VLN_SCRIPT_DIR}/.." && pwd)"
 VLN_ROS_SETUP="${VLN_ROS_SETUP:-/opt/ros/noetic/setup.bash}"
 VLN_CONTROL_PYTHON="${VLN_PYTHON:-/usr/bin/python3}"
 
-VLN_ACTION_TOPIC="${VLN_ACTION_TOPIC:-/vln/action}"
 VLN_ACTION_CONFIG="${VLN_ACTION_CONFIG:-${VLN_REPO_ROOT}/config/action_to_cmd_vel.json}"
 VLN_CONVERTER_PID=""
 VLN_INFERENCE_PID=""
@@ -42,6 +41,47 @@ if [[ ! -x "${VLN_CONTROL_PYTHON}" ]]; then
     exit 1
 fi
 
+VLN_INFERENCE_CONFIG="${VLN_INFERENCE_CONFIG:-config/vln_inference.json}"
+if [[ "${VLN_INFERENCE_CONFIG}" = /* ]]; then
+    VLN_INFERENCE_CONFIG_PATH="${VLN_INFERENCE_CONFIG}"
+else
+    VLN_INFERENCE_CONFIG_PATH="${VLN_REPO_ROOT}/${VLN_INFERENCE_CONFIG}"
+fi
+if [[ ! -f "${VLN_INFERENCE_CONFIG_PATH}" ]]; then
+    echo "[start_vln_with_base] Inference config not found: " \
+        "${VLN_INFERENCE_CONFIG_PATH}" >&2
+    exit 1
+fi
+
+TOPIC_TEXT="$("${VLN_CONTROL_PYTHON}" - "${VLN_INFERENCE_CONFIG_PATH}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as input_file:
+    config = json.load(input_file)
+topics = config.get("topics")
+if not isinstance(topics, dict):
+    raise ValueError("topics must be an object")
+values = []
+for key in ("action", "cmd_vel"):
+    value = topics.get(key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("topics.{} must be a non-empty string".format(key))
+    value = value.strip()
+    if "\n" in value or "\r" in value:
+        raise ValueError("topics.{} must be a single line".format(key))
+    values.append(value)
+print("\n".join(values))
+PY
+)"
+mapfile -t CONFIG_TOPICS <<< "${TOPIC_TEXT}"
+if [[ "${#CONFIG_TOPICS[@]}" -ne 2 ]]; then
+    echo "[start_vln_with_base] Config parser returned incomplete topics." >&2
+    exit 1
+fi
+VLN_ACTION_TOPIC="${VLN_ACTION_TOPIC:-${CONFIG_TOPICS[0]}}"
+VLN_CMD_VEL_TOPIC="${VLN_CMD_VEL_TOPIC:-${CONFIG_TOPICS[1]}}"
+
 set +u
 # shellcheck disable=SC1090
 source "${VLN_ROS_SETUP}"
@@ -61,14 +101,13 @@ fi
 echo "[start_vln_with_base] Starting action converter:"
 echo "  config: ${VLN_ACTION_CONFIG}"
 echo "  action topic: ${VLN_ACTION_TOPIC}"
+echo "  cmd_vel topic: ${VLN_CMD_VEL_TOPIC}"
 VLN_CONVERTER_ARGS=(
     "${VLN_SCRIPT_DIR}/ros_action_to_cmd_vel.py"
     --config "${VLN_ACTION_CONFIG}"
     --action-topic "${VLN_ACTION_TOPIC}"
+    --cmd-vel-topic "${VLN_CMD_VEL_TOPIC}"
 )
-if [[ -n "${VLN_CMD_VEL_TOPIC:-}" ]]; then
-    VLN_CONVERTER_ARGS+=(--cmd-vel-topic "${VLN_CMD_VEL_TOPIC}")
-fi
 if [[ -n "${VLN_LINEAR_SPEED:-}" ]]; then
     VLN_CONVERTER_ARGS+=(--linear-speed "${VLN_LINEAR_SPEED}")
 fi
@@ -97,7 +136,7 @@ if ! kill -0 "${VLN_CONVERTER_PID}" 2>/dev/null; then
     exit 1
 fi
 
-export VLN_ACTION_TOPIC VLN_ROS_SETUP
+export VLN_ACTION_TOPIC VLN_CMD_VEL_TOPIC VLN_ROS_SETUP VLN_INFERENCE_CONFIG
 "${VLN_SCRIPT_DIR}/start_vln_real.sh" &
 VLN_INFERENCE_PID=$!
 

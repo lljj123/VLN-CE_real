@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="model_name" default="mobile_base"/>
+  <arg name="x" default="0.0"/>
+  <arg name="y" default="0.0"/>
+  <arg name="z" default="0.05"/>
+  <arg name="yaw" default="0.0"/>
+
+  <param name="/use_sim_time" value="true"/>
+  <param name="robot_description"
+         textfile="$(find robot_sim_bundle)/urdf/turtlebot_kinect_sim.urdf"/>
+
+  <node name="spawn_turtlebot_model" pkg="gazebo_ros" type="spawn_model"
+        args="-x $(arg x) -y $(arg y) -z $(arg z) -Y $(arg yaw) -unpause -urdf -param robot_description -model $(arg model_name)"
+        output="screen"/>
+
+  <node pkg="robot_state_publisher" type="robot_state_publisher"
+        name="robot_state_publisher" output="screen">
+    <param name="publish_frequency" type="double" value="30.0"/>
+  </node>
+
+  <!-- Portable velocity relay: /cmd_vel -> Kobuki plugin topic. -->
+  <node pkg="robot_sim_bundle" type="cmd_vel_relay.py" name="cmd_vel_relay"
+        output="screen"/>
+</launch>

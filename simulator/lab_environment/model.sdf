@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<sdf version="1.6">
+  <model name="lab_environment">
+    <static>true</static>
+
+    <link name="lab_link">
+      <visual name="lab_visual">
+        <geometry>
+          <mesh>
+            <uri>model://lab_environment/meshes/lab_visual.dae</uri>
+            <scale>1 1 1</scale>
+          </mesh>
+        </geometry>
+      </visual>
+
+      <!--
+        Simplified floor collision.
+        Visual floor is concentrated near Z = -0.68 m.
+        Box thickness is 0.10 m, so its center is at Z = -0.73 m.
+      -->
+      <collision name="floor_collision">
+        <pose>0.726714 -16.142932 -0.730000 0 0 0</pose>
+        <geometry>
+          <box>
+            <size>9.663946 43.377256 0.100000</size>
+          </box>
+        </geometry>
+      </collision>
+    </link>
+  </model>
+</sdf>

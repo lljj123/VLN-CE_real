@@ -1,0 +1,35 @@
+{
+  "instruction": "Go straight down the long hallway.",
+  "checkpoint": "data/checkpoints/CMA_PM_DA_Aug_robot.pth",
+  "topics": {
+    "rgb": "/camera/rgb/image_raw",
+    "depth_raw": "/camera/depth/image_raw",
+    "depth_filled": "/camera/depth_registered/image_filled",
+    "action": "/vln/action",
+    "cmd_vel": "/cmd_vel_mux/input/teleop"
+  },
+  "inference": {
+    "max_actions": 0,
+    "min_action_interval_seconds": 5.0,
+    "instruction_length": 200,
+    "force_cpu": false,
+    "sample_actions": false,
+    "publish_actions": true,
+    "keep_running_after_stop": true
+  },
+  "synchronization": {
+    "slop_seconds": 0.1,
+    "queue_size": 20,
+    "input_timeout_seconds": 30.0,
+    "exit_on_input_timeout": false
+  },
+  "startup": {
+    "image_timeout_seconds": 20.0,
+    "action_subscriber_wait_seconds": 5.0
+  },
+  "depth": {
+    "min_meters": 0.0,
+    "max_meters": 10.0,
+    "log_every_frames": 0
+  }
+}

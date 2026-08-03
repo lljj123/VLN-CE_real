@@ -50,7 +50,10 @@ def discover_episodes(data_dir, split):
             if manifest.get("split") != split:
                 continue
             if manifest.get("status") != "complete":
-                raise ValueError("episode status is not complete")
+                # Interrupted, aborted and currently-recording episodes are
+                # intentionally retained for diagnosis/recovery but must not
+                # block otherwise valid training data.
+                continue
             if manifest.get("action_labels") != ACTION_LABELS:
                 raise ValueError("action_labels/order mismatch")
             instruction = manifest.get("instruction", "").strip()

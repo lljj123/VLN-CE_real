@@ -66,7 +66,14 @@ cd /path/to/VLN-CE_real
 ./scripts/start_vln_real.sh
 ```
 
-默认英文指令已保存在启动脚本中。临时替换指令：
+VLN 推理的英文指令、checkpoint、RGB/Depth 输入话题、动作输出话题、
+`cmd_vel` 底盘话题、同步容差、动作间隔和深度范围统一保存在：
+
+```text
+config/vln_inference.json
+```
+
+通常直接修改该 JSON 后运行启动脚本即可。临时替换指令：
 
 ```bash
 VLN_INSTRUCTION="Go forward and turn left." \
@@ -89,9 +96,13 @@ VLN_CHECKPOINT=data/checkpoints/CMA_finetuned_robot.pth \
 默认每 5 秒最多推理并发布一次动作，持续运行：
 
 ```text
-VLN_MAX_ACTIONS=0
-VLN_MIN_ACTION_INTERVAL=5.0
+inference.max_actions = 0
+inference.min_action_interval_seconds = 5.0
 ```
+
+环境变量仍可临时覆盖配置，例如 `VLN_RGB_TOPIC`、
+`VLN_DEPTH_RAW_TOPIC`、`VLN_ACTION_TOPIC` 和 `VLN_CHECKPOINT`。也可以把
+`ros_vln_inference.py` 的参数直接放在启动脚本后面，参数优先级最高。
 
 ## 驱动底盘
 
@@ -161,13 +172,88 @@ rostopic pub -1 /vln/action std_msgs/String 'data: "MOVE_FORWARD"'
 
 新动作会抢占旧动作；`STOP`、未知动作、动作超时和节点退出都会发布零速度。
 
+## 可视化深度和距离
+
+`ros_depth_visualizer.py` 可直接订阅 ROS 深度图，将深度着色，并在规则网格上
+标出距离（米）。窗口中移动鼠标可读取任意像素的精确距离；左键锁定位置，右键
+解除锁定，按 `q` 或 `Esc` 退出。节点同时发布带标注的 `bgr8` 图像到
+`/camera/depth_registered/image_visualized`。
+
+启动 ROS Master 和相机驱动后运行：
+
+```bash
+cd /path/to/VLN-CE_real
+python3 scripts/ros_depth_visualizer.py
+```
+
+默认输入为 `/camera/depth_registered/image_raw`，自动识别常见的 `16UC1`
+毫米深度和 `32FC1` 米深度。若相机话题不同，可指定：
+
+```bash
+python3 scripts/ros_depth_visualizer.py \
+  --input-topic /camera/depth/image_raw \
+  --max-depth 5.0 \
+  --grid-columns 8 \
+  --grid-rows 6
+```
+
+若在无桌面的机器人上运行，可只发布标注图，再在远端用 `rqt_image_view` 查看：
+
+```bash
+python3 scripts/ros_depth_visualizer.py --no-window
+rqt_image_view /camera/depth_registered/image_visualized
+```
+
+单像素噪声较大或有空洞时，可用 `--sample-radius 2` 显示对应位置 5×5 邻域内
+有效深度的中位数；默认值 `0` 显示精确像素值。若驱动使用非标准单位，则用
+`--depth-scale` 指定“原始数值到米”的乘数。
+
+## 查看 CMA 预处理后的 RGB-D
+
+`ros_preprocessed_rgbd_visualizer.py` 会同步 RGB 与已填洞的 `32FC1` 米制 Depth，
+并直接调用推理使用的 `preprocess_rgbd()`。它不会加载 checkpoint、执行 CMA 或
+发布动作。默认打开两个独立窗口，显示真正进入网络的 `224×224 RGB` 和
+`256×256` 归一化 Depth：
+
+```bash
+cd /path/to/VLN-CE_real
+python3 scripts/ros_preprocessed_rgbd_visualizer.py
+```
+
+按 `q` 或 `Esc` 关闭。节点同时发布以下诊断话题：
+
+```text
+/vln/preprocessed/rgb          rgb8，CMA 的准确 RGB 输入
+/vln/preprocessed/depth        32FC1，CMA 的准确归一化 Depth（0～1）
+/vln/preprocessed/depth_color  bgr8，仅供人眼查看的深度颜色图
+```
+
+在无桌面的小车上可以仅发布话题，再从远端查看：
+
+```bash
+python3 scripts/ros_preprocessed_rgbd_visualizer.py --no-window
+rqt_image_view /vln/preprocessed/rgb
+rqt_image_view /vln/preprocessed/depth_color
+```
+
+若实际 RGB 话题仍为 `/camera/rgb/image_color`，启动时覆盖默认值：
+
+```bash
+python3 scripts/ros_preprocessed_rgbd_visualizer.py \
+  --rgb-topic /camera/rgb/image_color \
+  --depth-topic /camera/depth_registered/image_filled
+```
+
 ## 保留文件
 
 ```text
 data/checkpoints/CMA_PM_DA_Aug_robot.pth  权重、R2R 词表和动作元数据
+config/vln_inference.json                 VLN 指令、RGB-D 输入和推理配置
 config/action_to_cmd_vel.json              底盘速度、距离和转角配置
 vlnce_real/                               独立 PyTorch CMA 网络
 scripts/ros_depth_hole_filler.py          深度单位转换与小孔洞填充
+scripts/ros_depth_visualizer.py           深度着色、网格距离标注和鼠标像素查询
+scripts/ros_preprocessed_rgbd_visualizer.py  查看进入 CMA 前的准确 RGB-D
 scripts/ros_vln_inference.py              RGB-D 同步、推理和动作发布
 scripts/start_vln_real.sh                 一键启动
 scripts/ros_action_to_cmd_vel.py          英文动作到 Twist 的安全转换
