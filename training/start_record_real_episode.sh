@@ -5,10 +5,18 @@ set -Eeuo pipefail
 TRAINING_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REAL_ROOT="$(cd -- "${TRAINING_DIR}/.." && pwd)"
 if [[ -z "${VLN_PYTHON:-}" ]]; then
-    if [[ -x "${HOME}/.local/share/mamba/envs/vlnce_real/bin/python" ]]; then
-        VLN_PYTHON="${HOME}/.local/share/mamba/envs/vlnce_real/bin/python"
-    else
-        VLN_PYTHON="${HOME}/.local/share/mamba/envs/vlnce/bin/python"
+    VLN_PYTHON_CANDIDATES=(
+        "${HOME}/.local/share/mamba/envs/vlnce_real/bin/python"
+        "${HOME}/.local/share/mamba/envs/vlnce/bin/python"
+    )
+    for VLN_PYTHON_CANDIDATE in "${VLN_PYTHON_CANDIDATES[@]}"; do
+        if [[ -x "${VLN_PYTHON_CANDIDATE}" ]]; then
+            VLN_PYTHON="${VLN_PYTHON_CANDIDATE}"
+            break
+        fi
+    done
+    if [[ -z "${VLN_PYTHON:-}" ]]; then
+        VLN_PYTHON="$(command -v python3 || true)"
     fi
 fi
 VLN_ROS_SETUP="${VLN_ROS_SETUP:-/opt/ros/noetic/setup.bash}"
@@ -38,7 +46,8 @@ if [[ ! -f "${VLN_ROS_SETUP}" ]]; then
     exit 1
 fi
 if [[ ! -x "${VLN_PYTHON}" ]]; then
-    echo "[record_real] Python not found: ${VLN_PYTHON}" >&2
+    echo "[record_real] No executable Python 3 was found." >&2
+    echo "Set VLN_PYTHON explicitly, for example /usr/bin/python3." >&2
     exit 1
 fi
 

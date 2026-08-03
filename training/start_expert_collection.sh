@@ -6,14 +6,23 @@ TRAINING_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REAL_ROOT="$(cd -- "${TRAINING_DIR}/.." && pwd)"
 COLLECTOR_CLI_ARGS=("$@")
 if [[ -z "${VLN_PYTHON:-}" ]]; then
-    if [[ -x "${HOME}/.local/share/mamba/envs/vlnce_real/bin/python" ]]; then
-        VLN_PYTHON="${HOME}/.local/share/mamba/envs/vlnce_real/bin/python"
-    else
-        VLN_PYTHON="${HOME}/.local/share/mamba/envs/vlnce/bin/python"
+    VLN_PYTHON_CANDIDATES=(
+        "${HOME}/.local/share/mamba/envs/vlnce_real/bin/python"
+        "${HOME}/.local/share/mamba/envs/vlnce/bin/python"
+    )
+    for VLN_PYTHON_CANDIDATE in "${VLN_PYTHON_CANDIDATES[@]}"; do
+        if [[ -x "${VLN_PYTHON_CANDIDATE}" ]]; then
+            VLN_PYTHON="${VLN_PYTHON_CANDIDATE}"
+            break
+        fi
+    done
+    if [[ -z "${VLN_PYTHON:-}" ]]; then
+        VLN_PYTHON="$(command -v python3 || true)"
     fi
 fi
 
 VLN_ROS_SETUP="${VLN_ROS_SETUP:-/opt/ros/noetic/setup.bash}"
+VLN_DEPTH_LOG_EVERY="${VLN_DEPTH_LOG_EVERY:-0}"
 VLN_DEPTH_PID=""
 
 cleanup() {
@@ -30,7 +39,9 @@ if [[ ! -f "${VLN_ROS_SETUP}" ]]; then
     exit 1
 fi
 if [[ ! -x "${VLN_PYTHON}" ]]; then
-    echo "[expert_collection] Python not found: ${VLN_PYTHON}" >&2
+    echo "[expert_collection] No executable Python 3 was found." >&2
+    echo "Set it explicitly, for example:" >&2
+    echo "  VLN_PYTHON=/usr/bin/python3 ./training/start_expert_collection.sh" >&2
     exit 1
 fi
 
@@ -136,6 +147,36 @@ VLN_EPISODE_ID="${VLN_EPISODE_ID:-${VLN_EPISODE_PREFIX}_$(date +%Y%m%d_%H%M%S_%N
 set --
 source "${VLN_ROS_SETUP}"
 set -- "${COLLECTOR_CLI_ARGS[@]}"
+if ! "${VLN_PYTHON}" - >/dev/null 2>&1 <<'PY'
+import glob
+import os
+import sys
+
+paths = ["/usr/lib/python3/dist-packages"]
+ros_distro = os.environ.get("ROS_DISTRO")
+if ros_distro:
+    paths.append(
+        "/opt/ros/{}/lib/python3/dist-packages".format(ros_distro)
+    )
+else:
+    paths.extend(sorted(glob.glob("/opt/ros/*/lib/python3/dist-packages")))
+for path in paths:
+    if os.path.isdir(path) and path not in sys.path:
+        sys.path.append(path)
+
+import cv2
+import cv_bridge
+import message_filters
+import numpy
+import rospy
+PY
+then
+    echo "[expert_collection] Python dependencies are unavailable in:" >&2
+    echo "  ${VLN_PYTHON}" >&2
+    echo "Required modules: cv2, numpy, rospy, message_filters, cv_bridge" >&2
+    echo "Use VLN_PYTHON to select a compatible environment." >&2
+    exit 1
+fi
 if ! rostopic list >/dev/null 2>&1; then
     echo "[expert_collection] ROS master is unreachable." >&2
     exit 1
@@ -147,7 +188,8 @@ if rosnode list 2>/dev/null | grep -Fxq /ros_depth_hole_filler; then
 else
     "${VLN_PYTHON}" scripts/ros_depth_hole_filler.py \
         --input-topic "${VLN_DEPTH_RAW_TOPIC}" \
-        --output-topic "${VLN_DEPTH_FILLED_TOPIC}" &
+        --output-topic "${VLN_DEPTH_FILLED_TOPIC}" \
+        --log-every "${VLN_DEPTH_LOG_EVERY}" &
     VLN_DEPTH_PID=$!
 fi
 
@@ -156,6 +198,7 @@ echo "[expert_collection] Depth: ${VLN_DEPTH_FILLED_TOPIC}"
 echo "[expert_collection] Chassis: ${VLN_CMD_VEL_TOPIC}"
 echo "[expert_collection] Motion config: ${VLN_MOTION_CONFIG}"
 echo "[expert_collection] Collection config: ${VLN_COLLECTION_CONFIG_PATH}"
+echo "[expert_collection] Python: ${VLN_PYTHON}"
 echo "[expert_collection] Episode: ${VLN_EPISODE_ID} (${VLN_DATA_SPLIT})"
 echo "[expert_collection] Instruction: ${VLN_INSTRUCTION}"
 echo "[expert_collection] Stop VLN inference/action-converter nodes before collecting."

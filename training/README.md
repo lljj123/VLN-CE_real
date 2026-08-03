@@ -44,6 +44,14 @@ cd /path/to/VLN-CE_real
 ./training/start_expert_collection.sh
 ```
 
+启动器会依次寻找 `vlnce_real`、`vlnce` Mamba 环境，然后回退到当前
+`PATH` 中的 `python3`。小车没有 Mamba 环境时通常会自动使用
+`/usr/bin/python3`。也可以显式指定：
+
+```bash
+VLN_PYTHON=/usr/bin/python3 ./training/start_expert_collection.sh
+```
+
 一次启动采集一个 episode，按 `s` 正常结束。采集同一路线多遍时，再次执行
 同一条脚本即可；它会用配置中的 `episode_prefix` 和当前时间自动生成新目录，
 不会覆盖前一次数据。临时改变设置时仍可使用 `--instruction`、
@@ -62,6 +70,13 @@ q = 紧急停车并放弃 episode
 每次输入需要按 Enter。保存图像成功之后才会启动底盘；动作执行完并发送
 零速度后才允许输入下一步。速度、前进距离和转向角度直接读取
 `config/action_to_cmd_vel.json`。
+
+专家交互时，启动器默认用 `--log-every 0` 关闭深度节点的逐帧统计，避免日志
+插入 `expert>` 输入行。需要诊断深度质量时可以临时恢复，例如：
+
+```bash
+VLN_DEPTH_LOG_EVERY=30 ./training/start_expert_collection.sh
+```
 
 第一次应使用架空轮或空旷安全区域验证。只测试采集、不让底盘运动：
 
