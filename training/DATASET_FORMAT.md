@@ -3,7 +3,7 @@
 数据集根目录固定为：
 
 ```text
-training/data/real_episodes/
+training/data/real_episodes_0p4m_30deg/
 ├── train/
 │   └── hallway_001/
 │       ├── episode.json

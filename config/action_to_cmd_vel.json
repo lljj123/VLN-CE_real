@@ -10,16 +10,16 @@
   },
   "actions": {
     "MOVE_FORWARD": {
-      "linear_speed_mps": 0.10,
-      "distance_m": 0.25
+      "linear_speed_mps": 0.20,
+      "distance_m": 0.40
     },
     "TURN_LEFT": {
       "angular_speed_radps": 0.30,
-      "angle_deg": 15.0
+      "angle_deg": 30.0
     },
     "TURN_RIGHT": {
       "angular_speed_radps": 0.30,
-      "angle_deg": 15.0
+      "angle_deg": 30.0
     }
   }
 }

@@ -397,7 +397,8 @@ def build_parser():
         "--split", choices=["train", "val"], default="train"
     )
     parser.add_argument(
-        "--output-dir", default="training/data/real_episodes"
+        "--output-dir",
+        default="training/data/real_episodes_0p4m_30deg",
     )
     parser.add_argument(
         "--rgb-topic", default="/camera/rgb/image_color"

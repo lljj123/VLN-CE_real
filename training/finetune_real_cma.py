@@ -288,14 +288,16 @@ def build_parser():
         )
     )
     parser.add_argument(
-        "--data-dir", default="training/data/real_episodes"
+        "--data-dir",
+        default="training/data/real_episodes_0p4m_30deg",
     )
     parser.add_argument(
         "--checkpoint",
         default="data/checkpoints/CMA_PM_DA_Aug_robot.pth",
     )
     parser.add_argument(
-        "--output-dir", default="training/checkpoints/real_cma"
+        "--output-dir",
+        default="training/checkpoints/real_cma_0p4m_30deg",
     )
     parser.add_argument("--resume")
     parser.add_argument("--epochs", type=int, default=10)

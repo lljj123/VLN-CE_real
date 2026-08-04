@@ -1,8 +1,8 @@
 {
   "instruction": "Go straight down the hallway from the starting room. Turn left at the end, pass the first doorway on your left, then turn right. Continue forward to the next doorway on your left. Turn left into the office and stop in front of the chair.",
-  "episode_prefix": "real_episode",
+  "episode_prefix": "real_0p4m_30deg",
   "split": "train",
-  "output_dir": "training/data/real_episodes",
+  "output_dir": "training/data/real_episodes_0p4m_30deg",
   "topics": {
     "rgb": "/camera/rgb/image_color",
     "depth_raw": "/camera/depth_registered/image_raw",

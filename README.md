@@ -121,9 +121,9 @@ cd /path/to/VLN-CE_real
 
 ```text
 STOP          -> linear.x = 0,    angular.z = 0
-MOVE_FORWARD  -> linear.x = 0.10, angular.z = 0，执行到约 0.25 m 后停止
-TURN_LEFT     -> linear.x = 0,    angular.z = +0.30，执行到约 15° 后停止
-TURN_RIGHT    -> linear.x = 0,    angular.z = -0.30，执行到约 15° 后停止
+MOVE_FORWARD  -> linear.x = 0.20, angular.z = 0，名义执行 0.40 m（约 2 秒）后停止
+TURN_LEFT     -> linear.x = 0,    angular.z = +0.30，名义执行 30° 后停止
+TURN_RIGHT    -> linear.x = 0,    angular.z = -0.30，名义执行 30° 后停止
 ```
 
 正 `angular.z` 表示左转，负值表示右转。距离和角度目前使用“速度 × 时间”开环

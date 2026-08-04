@@ -30,7 +30,9 @@ import numpy as np
 
 
 REAL_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT_DIR = REAL_ROOT / "training" / "data" / "real_episodes"
+DEFAULT_OUTPUT_DIR = (
+    REAL_ROOT / "training" / "data" / "real_episodes_0p4m_30deg"
+)
 DEFAULT_MOTION_CONFIG = REAL_ROOT / "config" / "action_to_cmd_vel.json"
 if str(REAL_ROOT) not in sys.path:
     sys.path.insert(0, str(REAL_ROOT))

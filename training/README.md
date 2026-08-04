@@ -54,8 +54,10 @@ VLN_PYTHON=/usr/bin/python3 ./training/start_expert_collection.sh
 
 一次启动采集一个 episode，按 `s` 正常结束。采集同一路线多遍时，再次执行
 同一条脚本即可；它会用配置中的 `episode_prefix` 和当前时间自动生成新目录，
-不会覆盖前一次数据。临时改变设置时仍可使用 `--instruction`、
-`--episode-id` 或 `--split val` 覆盖配置文件。
+不会覆盖前一次数据。当前大动作数据默认统一保存在
+`training/data/real_episodes_0p4m_30deg`，不会与旧的 `0.25m/15°` episode
+混合。临时改变设置时仍可使用 `--instruction`、`--episode-id` 或
+`--split val` 覆盖配置文件。
 
 程序收到同步 RGB-D 并检测到 `/cmd_vel` 有底盘订阅者后，会显示：
 
@@ -69,7 +71,8 @@ q = 紧急停车并放弃 episode
 
 每次输入需要按 Enter。保存图像成功之后才会启动底盘；动作执行完并发送
 零速度后才允许输入下一步。速度、前进距离和转向角度直接读取
-`config/action_to_cmd_vel.json`。
+`config/action_to_cmd_vel.json`。当前名义动作是前进 `0.40m @ 0.20m/s`
+（约 2 秒）以及左右转 `30° @ 0.30rad/s`（约 1.745 秒）。
 
 专家交互时，启动器默认用 `--log-every 0` 关闭深度节点的逐帧统计，避免日志
 插入 `expert>` 输入行。需要诊断深度质量时可以临时恢复，例如：
@@ -115,7 +118,7 @@ rostopic pub -1 /vln/expert_action std_msgs/String "data: 'STOP'"
 采集结果：
 
 ```text
-training/data/real_episodes/train/room01_run01/
+training/data/real_episodes_0p4m_30deg/train/room01_run01/
 ├── episode.json
 ├── rgb/000000.jpg
 └── depth/000000.npy
@@ -146,6 +149,18 @@ cd /path/to/VLN-CE_real
 ./training/start_finetune_real.sh
 ```
 
+这个命令默认执行的关系是：
+
+```text
+CMA_PM_DA_Aug_robot.pth（初始权重、词表、动作顺序）
++ training/data/real_episodes_0p4m_30deg/train/（真实专家数据）
+-> training/checkpoints/real_cma_0p4m_30deg/best_robot.pth（新权重）
+```
+
+训练不会覆盖 `CMA_PM_DA_Aug_robot.pth`。每次采集脚本创建的是一个
+episode；同一数据集根目录下所有 `status: complete` 的 train episode
+会一起送入微调。
+
 默认参数：
 
 ```text
@@ -172,7 +187,7 @@ learning rate 1e-5
 输出：
 
 ```text
-training/checkpoints/real_cma/
+training/checkpoints/real_cma_0p4m_30deg/
 ├── best_robot.pth
 ├── latest_robot.pth
 └── latest_training.pth
@@ -183,7 +198,7 @@ training/checkpoints/real_cma/
 
 ```bash
 VLN_TRAIN_EPOCHS=20 ./training/start_finetune_real.sh \
-  --resume training/checkpoints/real_cma/latest_training.pth
+  --resume training/checkpoints/real_cma_0p4m_30deg/latest_training.pth
 ```
 
 `VLN_TRAIN_EPOCHS` 表示最终 epoch 编号，不是额外增加的轮数；例如已经完成
@@ -192,12 +207,13 @@ VLN_TRAIN_EPOCHS=20 ./training/start_finetune_real.sh \
 ## 5. 测试微调权重
 
 ```bash
-VLN_CHECKPOINT=training/checkpoints/real_cma/best_robot.pth \
-./scripts/start_vln_real.sh
+VLN_CHECKPOINT=training/checkpoints/real_cma_0p4m_30deg/best_robot.pth \
+./scripts/start_vln_with_base.sh
 ```
 
-先在架空轮、低速或安全区域测试。确认验证路线效果优于原权重后，再替换
-默认 checkpoint。
+联合启动脚本会加载新权重，并继续使用同一个
+`config/action_to_cmd_vel.json` 执行 `0.40m/30°` 动作。先在架空轮、低速
+或安全区域测试。确认验证路线效果优于原权重后，再替换默认 checkpoint。
 
 ## 文件职责
 

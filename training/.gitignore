@@ -7,3 +7,11 @@ data/real_episodes/train/*
 data/real_episodes/val/*
 !data/real_episodes/train/.gitkeep
 !data/real_episodes/val/.gitkeep
+data/real_episodes_0p4m_30deg/*
+!data/real_episodes_0p4m_30deg/.gitkeep
+!data/real_episodes_0p4m_30deg/train/
+!data/real_episodes_0p4m_30deg/val/
+data/real_episodes_0p4m_30deg/train/*
+data/real_episodes_0p4m_30deg/val/*
+!data/real_episodes_0p4m_30deg/train/.gitkeep
+!data/real_episodes_0p4m_30deg/val/.gitkeep

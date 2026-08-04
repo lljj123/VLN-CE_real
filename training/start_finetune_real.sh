@@ -12,9 +12,9 @@ if [[ -z "${VLN_TRAIN_PYTHON:-}" ]]; then
     fi
 fi
 
-VLN_TRAIN_DATA="${VLN_TRAIN_DATA:-training/data/real_episodes}"
+VLN_TRAIN_DATA="${VLN_TRAIN_DATA:-training/data/real_episodes_0p4m_30deg}"
 VLN_BASE_CHECKPOINT="${VLN_BASE_CHECKPOINT:-data/checkpoints/CMA_PM_DA_Aug_robot.pth}"
-VLN_TRAIN_OUTPUT="${VLN_TRAIN_OUTPUT:-training/checkpoints/real_cma}"
+VLN_TRAIN_OUTPUT="${VLN_TRAIN_OUTPUT:-training/checkpoints/real_cma_0p4m_30deg}"
 VLN_TRAIN_EPOCHS="${VLN_TRAIN_EPOCHS:-10}"
 VLN_TRAIN_BATCH_SIZE="${VLN_TRAIN_BATCH_SIZE:-2}"
 VLN_TRAIN_SEQUENCE_LENGTH="${VLN_TRAIN_SEQUENCE_LENGTH:-8}"
