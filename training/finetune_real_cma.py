@@ -3,6 +3,7 @@
 """Fine-tune the Habitat-free CMA policy on real-robot episodes."""
 
 import argparse
+import csv
 import json
 import os
 import random
@@ -13,6 +14,10 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+import matplotlib
+
+matplotlib.use("Agg")
+from matplotlib import pyplot as plt  # noqa: E402
 from torch.utils.data import DataLoader
 
 
@@ -44,6 +49,95 @@ def atomic_torch_save(payload, output_path):
     temporary = output_path.with_name(output_path.name + ".tmp")
     torch.save(payload, str(temporary))
     os.replace(str(temporary), str(output_path))
+
+
+def atomic_json_save(payload, output_path):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_name(output_path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as output_file:
+        json.dump(payload, output_file, indent=2)
+        output_file.write("\n")
+        output_file.flush()
+        os.fsync(output_file.fileno())
+    os.replace(str(temporary), str(output_path))
+
+
+def atomic_csv_save(history, output_path):
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_name(output_path.name + ".tmp")
+    fieldnames = [
+        "epoch",
+        "train_loss",
+        "train_accuracy",
+        "val_loss",
+        "val_accuracy",
+    ]
+    with temporary.open("w", encoding="utf-8", newline="") as output_file:
+        writer = csv.DictWriter(output_file, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(history)
+        output_file.flush()
+        os.fsync(output_file.fileno())
+    os.replace(str(temporary), str(output_path))
+
+
+def save_curve(history, output_path, metric, ylabel, percentage=False):
+    epochs = [record["epoch"] for record in history]
+    train_values = [record["train_{}".format(metric)] for record in history]
+    val_points = [
+        (record["epoch"], record["val_{}".format(metric)])
+        for record in history
+        if record["val_{}".format(metric)] is not None
+    ]
+    scale = 100.0 if percentage else 1.0
+
+    figure, axis = plt.subplots(figsize=(8, 5))
+    axis.plot(
+        epochs,
+        [value * scale for value in train_values],
+        marker="o",
+        label="Train",
+    )
+    if val_points:
+        axis.plot(
+            [point[0] for point in val_points],
+            [point[1] * scale for point in val_points],
+            marker="o",
+            label="Validation",
+        )
+    axis.set_xlabel("Epoch")
+    axis.set_ylabel(ylabel)
+    axis.set_title("{} Curve".format(ylabel))
+    axis.grid(True, alpha=0.3)
+    axis.legend()
+    axis.set_xticks(epochs)
+    if percentage:
+        axis.set_ylim(0.0, 100.0)
+    figure.tight_layout()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = output_path.with_name(output_path.name + ".tmp")
+    figure.savefig(str(temporary), format="png", dpi=150)
+    plt.close(figure)
+    os.replace(str(temporary), str(output_path))
+
+
+def save_metric_artifacts(history, output_dir):
+    atomic_json_save(history, output_dir / "metrics_history.json")
+    atomic_csv_save(history, output_dir / "metrics_history.csv")
+    save_curve(
+        history,
+        output_dir / "loss_curve.png",
+        metric="loss",
+        ylabel="Loss",
+    )
+    save_curve(
+        history,
+        output_dir / "accuracy_curve.png",
+        metric="accuracy",
+        ylabel="Accuracy (%)",
+        percentage=True,
+    )
 
 
 def checkpoint_metadata(checkpoint):
@@ -240,6 +334,7 @@ def save_training_outputs(
     output_dir,
     epoch,
     best_val_loss,
+    history,
     args,
     is_best,
 ):
@@ -272,6 +367,7 @@ def save_training_outputs(
         "optimizer_state": optimizer.state_dict(),
         "epoch": epoch,
         "best_val_loss": best_val_loss,
+        "history": history,
         "robot_metadata": checkpoint_metadata(base_checkpoint),
         "fine_tuning": fine_tuning,
     }
@@ -300,7 +396,7 @@ def build_parser():
         default="training/checkpoints/real_cma_0p4m_30deg",
     )
     parser.add_argument("--resume")
-    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--sequence-length", type=int, default=8)
     parser.add_argument("--sequence-stride", type=int, default=8)
@@ -396,6 +492,7 @@ def main():
 
     start_epoch = 1
     best_val_loss = float("inf")
+    history = []
     if args.resume:
         resume_path = resolve_real_path(args.resume)
         resume = torch.load(str(resume_path), map_location="cpu")
@@ -427,6 +524,7 @@ def main():
                     state[key] = value.to(device)
         start_epoch = int(resume["epoch"]) + 1
         best_val_loss = float(resume["best_val_loss"])
+        history = list(resume.get("history", []))
         if start_epoch > args.epochs:
             raise ValueError(
                 "--epochs is the final epoch number; set it to at least {} "
@@ -507,6 +605,23 @@ def main():
         is_best = score < best_val_loss
         if is_best:
             best_val_loss = score
+        history.append(
+            {
+                "epoch": epoch,
+                "train_loss": train_metrics["loss"],
+                "train_accuracy": train_metrics["accuracy"],
+                "val_loss": (
+                    val_metrics["loss"]
+                    if val_metrics is not None
+                    else None
+                ),
+                "val_accuracy": (
+                    val_metrics["accuracy"]
+                    if val_metrics is not None
+                    else None
+                ),
+            }
+        )
         save_training_outputs(
             policy=policy,
             optimizer=optimizer,
@@ -514,9 +629,11 @@ def main():
             output_dir=output_dir,
             epoch=epoch,
             best_val_loss=best_val_loss,
+            history=history,
             args=args,
             is_best=is_best,
         )
+        save_metric_artifacts(history, output_dir)
         print(
             "epoch={} train_loss={:.6f} train_accuracy={:.2%}{}{}".format(
                 epoch,
@@ -538,6 +655,12 @@ def main():
         )
 
     print("Robot checkpoint: {}".format(output_dir / "best_robot.pth"))
+    print("Loss curve: {}".format(output_dir / "loss_curve.png"))
+    print(
+        "Accuracy curve: {}".format(
+            output_dir / "accuracy_curve.png"
+        )
+    )
     return 0
 
 

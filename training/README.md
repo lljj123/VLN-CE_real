@@ -66,13 +66,30 @@ w = 保存当前帧和 MOVE_FORWARD 标签，然后底盘前进一步
 a = 保存当前帧和 TURN_LEFT 标签，然后底盘左转一次
 d = 保存当前帧和 TURN_RIGHT 标签，然后底盘右转一次
 s = 保存当前帧和 STOP 标签，停车并正常完成 episode
+e = 停车并正常完成 episode，但不新增 STOP 标签
 q = 紧急停车并放弃 episode
 ```
 
 每次输入需要按 Enter。保存图像成功之后才会启动底盘；动作执行完并发送
-零速度后才允许输入下一步。速度、前进距离和转向角度直接读取
+零速度后才允许输入下一步。短转弯片段尚未到达导航终点时使用 `e`，不能用
+错误的 `STOP` 标签结束。速度、前进距离和转向角度直接读取
 `config/action_to_cmd_vel.json`。当前名义动作是前进 `0.40m @ 0.20m/s`
 （约 2 秒）以及左右转 `30° @ 0.30rad/s`（约 1.745 秒）。
+
+采集器默认订阅配置的 `/odom`，按实际里程计位移/偏航角达到 `0.40m/30°`
+后停止，接近目标时自动降速。里程计缺失、过期或动作超时会立即停车，并把
+当前episode标为错误以防错误动作序列进入训练。采集与推理验证共用同一个
+`config/action_to_cmd_vel.json`，因此动作尺度和闭环容差一致。
+
+定点强化转弯时，每次物理重置小车都重新启动一个episode。推荐从转角前约
+0.8m开始，按实际需要输入：
+
+```text
+w, w, a ... a, w, w, e
+```
+
+也就是转弯前至少两步直行、转到对正、转弯后至少两步直行，再用 `e` 保存。
+不要把搬回起点后的多组数据继续写进同一个episode。
 
 专家交互时，启动器默认用 `--log-every 0` 关闭深度节点的逐帧统计，避免日志
 插入 `expert>` 输入行。需要诊断深度质量时可以临时恢复，例如：
@@ -164,13 +181,19 @@ episode；同一数据集根目录下所有 `status: complete` 的 train episode
 默认参数：
 
 ```text
-10 epochs
+200 epochs
 batch size 2
 连续 8 步序列
 learning rate 1e-5
 冻结 RGB/Depth ResNet 和词嵌入
 训练 CMA 注意力、RNN 和动作分类头
 ```
+
+“连续8步序列”表示离线训练时，CMA的RNN一次按时间顺序处理最多8组
+`RGB-D + 上一步动作 + 当前专家动作`，不代表小车会一次执行8个动作，也不改变
+单步的0.40m/30°尺度。定点转弯短片段若包含转前直行、若干次转向和转后直行，
+总长度超过8时可用 `VLN_TRAIN_SEQUENCE_LENGTH=16` 训练，使完整动作切换更可能
+处于同一训练窗口。
 
 默认冻结视觉编码器是为了降低显存和小数据过拟合风险。数据足够多后可：
 
@@ -190,11 +213,17 @@ learning rate 1e-5
 training/checkpoints/real_cma_0p4m_30deg/
 ├── best_robot.pth
 ├── latest_robot.pth
-└── latest_training.pth
+├── latest_training.pth
+├── metrics_history.json
+├── metrics_history.csv
+├── loss_curve.png
+└── accuracy_curve.png
 ```
 
 `best_robot.pth` 可直接被小车加载；`latest_training.pth` 额外保存优化器
-状态，用于继续训练：
+状态和历史指标，用于继续训练。每个 epoch 完成后会更新两张曲线图；存在
+验证集时图中同时显示训练集与验证集曲线，没有验证集时只显示训练曲线。
+JSON/CSV 文件保存绘图所用的原始数值：
 
 ```bash
 VLN_TRAIN_EPOCHS=20 ./training/start_finetune_real.sh \
@@ -213,7 +242,8 @@ VLN_CHECKPOINT=training/checkpoints/real_cma_0p4m_30deg/best_robot.pth \
 
 联合启动脚本会加载新权重，并继续使用同一个
 `config/action_to_cmd_vel.json` 执行 `0.40m/30°` 动作。先在架空轮、低速
-或安全区域测试。确认验证路线效果优于原权重后，再替换默认 checkpoint。
+或安全区域测试。联合脚本会先等待 `/odom`，再启动VLN推理；验证动作同样按
+里程计闭环结束。确认验证路线效果优于原权重后，再替换默认 checkpoint。
 
 ## 文件职责
 

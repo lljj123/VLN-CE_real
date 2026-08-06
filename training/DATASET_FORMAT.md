@@ -107,6 +107,7 @@ JSON 字段为准，并使用 checkpoint 自带词表转换为 token。
 执行完成。这些是附加元数据，现有 `training/real_dataset.py` 会安全忽略
 不参与训练的字段。
 
-只有 `status: "complete"` 的 episode 会进入训练。按 `s` 记录 `STOP`
-后正常结束才会写入 `complete`；按 `q` 或 Ctrl-C 会写入 `aborted`，保留
-文件供检查，但训练加载器会自动跳过。
+只有 `status: "complete"` 的 episode 会进入训练。按 `s` 会先记录真实终点的
+`STOP` 再正常结束；短片段尚未到终点时按 `e`，会正常保存为 `complete` 但不
+伪造 `STOP` 样本。按 `q` 或 Ctrl-C 会写入 `aborted`，保留文件供检查，但
+训练加载器会自动跳过。

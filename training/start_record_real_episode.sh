@@ -20,7 +20,7 @@ if [[ -z "${VLN_PYTHON:-}" ]]; then
     fi
 fi
 VLN_ROS_SETUP="${VLN_ROS_SETUP:-/opt/ros/noetic/setup.bash}"
-VLN_INSTRUCTION="${VLN_INSTRUCTION:-Go straight down the hallway from the starting room. Turn left at the end, pass the first doorway on your left, then turn right. Continue forward to the next doorway on your left. Turn left into the office and stop in front of the chair.}"
+VLN_INSTRUCTION="${VLN_INSTRUCTION:-Go straight down the hallway. At the end of the hallway, turn left into the office and stop in front of the chair.}"
 VLN_EPISODE_ID="${VLN_EPISODE_ID:-episode_$(date +%Y%m%d_%H%M%S)}"
 VLN_DATA_SPLIT="${VLN_DATA_SPLIT:-train}"
 VLN_EXPERT_ACTION_TOPIC="${VLN_EXPERT_ACTION_TOPIC:-/vln/expert_action}"

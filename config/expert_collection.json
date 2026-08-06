@@ -1,5 +1,5 @@
 {
-  "instruction": "Go straight down the hallway from the starting room. Turn left at the end, pass the first doorway on your left, then turn right. Continue forward to the next doorway on your left. Turn left into the office and stop in front of the chair.",
+  "instruction": "Go straight down the hallway. At the end of the hallway, turn left into the office and stop in front of the chair.",
   "episode_prefix": "real_0p4m_30deg",
   "split": "train",
   "output_dir": "training/data/real_episodes_0p4m_30deg",
@@ -10,7 +10,8 @@
     "rgb_camera_info": "/camera/rgb/camera_info",
     "depth_camera_info": "/camera/depth_registered/camera_info",
     "expert_action": "/vln/expert_action",
-    "cmd_vel": "/cmd_vel_mux/input/teleop"
+    "cmd_vel": "/cmd_vel_mux/input/teleop",
+    "odom": "/odom"
   },
   "motion_config": "config/action_to_cmd_vel.json",
   "synchronization": {

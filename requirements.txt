@@ -2,3 +2,4 @@
 # Prefer the ROS/OS OpenCV build so cv_bridge and cv2 use compatible ABIs.
 numpy>=1.19
 torch>=1.10
+matplotlib>=3.3

@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 
-"""Convert VLN English actions into time-bounded ROS1 Twist commands.
+"""Convert VLN English actions into odometry-bounded ROS1 Twist commands.
 
 The node subscribes to ``std_msgs/String`` actions and continuously publishes
-``geometry_msgs/Twist`` while an action is active.  Motion is deliberately
-time bounded: the default 0.25 m forward step and 15 degree turn match the
-discrete action scale used by VLN-CE, but they must be calibrated for the
-actual chassis.
+``geometry_msgs/Twist`` while an action is active.  With the default
+configuration, ``nav_msgs/Odometry`` feedback closes each distance/angle
+action and a time limit remains as a fail-safe.
 """
 
 import argparse
@@ -23,6 +22,8 @@ from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = REPO_ROOT / "config" / "action_to_cmd_vel.json"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 
 def add_ros_python_paths() -> None:
@@ -48,7 +49,15 @@ add_ros_python_paths()
 
 import rospy  # noqa: E402
 from geometry_msgs.msg import Twist  # noqa: E402
+from nav_msgs.msg import Odometry  # noqa: E402
 from std_msgs.msg import String  # noqa: E402
+
+from vlnce_real.odom_control import (  # noqa: E402
+    ClosedLoopMotion,
+    OdomControlSettings,
+    PlanarPose,
+    quaternion_to_yaw,
+)
 
 
 VALID_ACTIONS = {
@@ -84,7 +93,7 @@ def action_to_motion(
     action: str,
     settings: MotionSettings,
 ) -> Motion:
-    """Return the velocity and open-loop duration for one VLN action."""
+    """Return maximum velocity and nominal duration for one VLN action."""
 
     action = normalize_action(action)
     if action not in VALID_ACTIONS:
@@ -136,6 +145,12 @@ def _first_not_none(*values):
     raise RuntimeError("No configuration value or fallback was supplied.")
 
 
+def _configuration_boolean(value, name):
+    if not isinstance(value, bool):
+        raise ValueError("{} must be true or false.".format(name))
+    return value
+
+
 def load_configuration(args) -> None:
     """Load JSON defaults, then apply any explicit command-line overrides."""
 
@@ -172,6 +187,11 @@ def load_configuration(args) -> None:
         topics.get("cmd_vel"),
         "/cmd_vel",
     )
+    args.odom_topic = _first_not_none(
+        args.odom_topic,
+        topics.get("odom"),
+        "/odom",
+    )
     args.publish_rate = _first_not_none(
         args.publish_rate,
         control.get("publish_rate_hz"),
@@ -186,6 +206,66 @@ def load_configuration(args) -> None:
         args.stop_publish_count,
         control.get("stop_publish_count"),
         3,
+    )
+    configured_use_odom = control.get("use_odom", True)
+    args.use_odom = _first_not_none(
+        args.use_odom,
+        _configuration_boolean(configured_use_odom, "control.use_odom"),
+    )
+    args.odom_stale_timeout = _first_not_none(
+        args.odom_stale_timeout,
+        control.get("odom_stale_timeout_s"),
+        0.5,
+    )
+    args.action_timeout_scale = _first_not_none(
+        args.action_timeout_scale,
+        control.get("action_timeout_scale"),
+        3.0,
+    )
+    args.minimum_action_timeout = _first_not_none(
+        args.minimum_action_timeout,
+        control.get("minimum_action_timeout_s"),
+        3.0,
+    )
+    args.distance_tolerance = _first_not_none(
+        args.distance_tolerance,
+        control.get("distance_tolerance_m"),
+        0.02,
+    )
+    args.angle_tolerance_deg = _first_not_none(
+        args.angle_tolerance_deg,
+        control.get("angle_tolerance_deg"),
+        2.0,
+    )
+    args.linear_slowdown_distance = _first_not_none(
+        args.linear_slowdown_distance,
+        control.get("linear_slowdown_distance_m"),
+        0.10,
+    )
+    args.angular_slowdown_angle_deg = _first_not_none(
+        args.angular_slowdown_angle_deg,
+        control.get("angular_slowdown_angle_deg"),
+        8.0,
+    )
+    args.minimum_linear_speed = _first_not_none(
+        args.minimum_linear_speed,
+        control.get("minimum_linear_speed_mps"),
+        0.05,
+    )
+    args.minimum_angular_speed = _first_not_none(
+        args.minimum_angular_speed,
+        control.get("minimum_angular_speed_radps"),
+        0.10,
+    )
+    args.forward_heading_kp = _first_not_none(
+        args.forward_heading_kp,
+        control.get("forward_heading_kp"),
+        1.5,
+    )
+    args.maximum_heading_correction = _first_not_none(
+        args.maximum_heading_correction,
+        control.get("maximum_heading_correction_radps"),
+        0.20,
     )
     args.linear_speed = _first_not_none(
         args.linear_speed,
@@ -243,12 +323,30 @@ class ActionToCmdVelNode:
             right_angular_speed=args.right_angular_speed,
             right_angle_deg=args.right_turn_angle_deg,
         )
+        self.odom_settings = OdomControlSettings(
+            distance_tolerance_m=args.distance_tolerance,
+            angle_tolerance_rad=math.radians(args.angle_tolerance_deg),
+            linear_slowdown_distance_m=args.linear_slowdown_distance,
+            angular_slowdown_angle_rad=math.radians(
+                args.angular_slowdown_angle_deg
+            ),
+            minimum_linear_speed_mps=args.minimum_linear_speed,
+            minimum_angular_speed_radps=args.minimum_angular_speed,
+            forward_heading_kp=args.forward_heading_kp,
+            maximum_heading_correction_radps=(
+                args.maximum_heading_correction
+            ),
+            action_timeout_scale=args.action_timeout_scale,
+            minimum_action_timeout_s=args.minimum_action_timeout,
+        )
         self.lock = threading.Lock()
+        self.latest_odom = None
         self.pending_action = "STOP"
         self.pending_sequence = 0
         self.handled_sequence = 0
         self.active_action = None
         self.active_motion = None
+        self.active_controller = None
         self.active_until = 0.0
         self.last_action_time = None
         self.watchdog_reported = False
@@ -261,6 +359,14 @@ class ActionToCmdVelNode:
             Twist,
             queue_size=1,
         )
+        self.odom_subscriber = None
+        if args.use_odom:
+            self.odom_subscriber = rospy.Subscriber(
+                args.odom_topic,
+                Odometry,
+                self._odom_callback,
+                queue_size=1,
+            )
         self.action_subscriber = rospy.Subscriber(
             args.action_topic,
             String,
@@ -268,6 +374,34 @@ class ActionToCmdVelNode:
             queue_size=10,
         )
         rospy.on_shutdown(self._on_shutdown)
+
+    def _odom_callback(self, message: Odometry) -> None:
+        position = message.pose.pose.position
+        orientation = message.pose.pose.orientation
+        pose = PlanarPose(
+            float(position.x),
+            float(position.y),
+            quaternion_to_yaw(
+                orientation.x,
+                orientation.y,
+                orientation.z,
+                orientation.w,
+            ),
+        )
+        with self.lock:
+            self.latest_odom = (
+                pose,
+                time.monotonic(),
+                message.header.stamp.to_sec(),
+            )
+
+    def _fresh_odom(self, now):
+        if self.latest_odom is None:
+            return None
+        pose, arrival_time, ros_stamp = self.latest_odom
+        if now - arrival_time > self.args.odom_stale_timeout:
+            return None
+        return pose, arrival_time, ros_stamp
 
     def _action_callback(self, message: String) -> None:
         received = message.data
@@ -294,6 +428,7 @@ class ActionToCmdVelNode:
             if action == "STOP":
                 self.active_action = None
                 self.active_motion = None
+                self.active_controller = None
                 self.active_until = 0.0
                 self.stop_repeats_remaining = self.args.stop_publish_count
                 self.velocity_publisher.publish(make_twist())
@@ -307,6 +442,7 @@ class ActionToCmdVelNode:
         if action == "STOP":
             self.active_action = None
             self.active_motion = None
+            self.active_controller = None
             self.active_until = 0.0
             self.stop_repeats_remaining = self.args.stop_publish_count
             rospy.loginfo("action=STOP cmd_vel=(0.000 m/s, 0.000 rad/s)")
@@ -316,22 +452,69 @@ class ActionToCmdVelNode:
             action=action,
             settings=self.motion_settings,
         )
+        controller = None
+        if self.args.use_odom:
+            odom = self._fresh_odom(now)
+            if odom is None:
+                self.active_action = None
+                self.active_motion = None
+                self.active_controller = None
+                self.active_until = 0.0
+                self.stop_repeats_remaining = self.args.stop_publish_count
+                rospy.logerr(
+                    "action=%s rejected: no fresh odometry on %s within "
+                    "%.3f s; chassis stopped",
+                    action,
+                    self.args.odom_topic,
+                    self.args.odom_stale_timeout,
+                )
+                return
+            controller = ClosedLoopMotion(
+                action=action,
+                start_pose=odom[0],
+                nominal_linear_x=motion.linear_x,
+                nominal_angular_z=motion.angular_z,
+                nominal_duration=motion.duration,
+                settings=self.odom_settings,
+                start_time=now,
+            )
         self.active_action = action
         self.active_motion = motion
-        self.active_until = now + motion.duration
-        self.stop_repeats_remaining = 0
-        rospy.loginfo(
-            "action=%s cmd_vel=(%.3f m/s, %.3f rad/s) duration=%.3f s",
-            action,
-            motion.linear_x,
-            motion.angular_z,
-            motion.duration,
+        self.active_controller = controller
+        self.active_until = now + (
+            controller.timeout_s if controller is not None else motion.duration
         )
+        self.stop_repeats_remaining = 0
+        if controller is not None:
+            target = (
+                "{:.3f} m".format(controller.target)
+                if action == "MOVE_FORWARD"
+                else "{:.2f} deg".format(math.degrees(controller.target))
+            )
+            rospy.loginfo(
+                "action=%s odom_target=%s cmd_vel_max=(%.3f m/s, "
+                "%.3f rad/s) timeout=%.3f s",
+                action,
+                target,
+                motion.linear_x,
+                motion.angular_z,
+                controller.timeout_s,
+            )
+        else:
+            rospy.loginfo(
+                "action=%s open_loop cmd_vel=(%.3f m/s, %.3f rad/s) "
+                "duration=%.3f s",
+                action,
+                motion.linear_x,
+                motion.angular_z,
+                motion.duration,
+            )
 
     def _stop_active_action(self, reason: str) -> None:
         action = self.active_action
         self.active_action = None
         self.active_motion = None
+        self.active_controller = None
         self.active_until = 0.0
         self.stop_repeats_remaining = self.args.stop_publish_count
         self.velocity_publisher.publish(make_twist())
@@ -344,7 +527,7 @@ class ActionToCmdVelNode:
             "(geometry_msgs/Twist); config=%s; "
             "forward=%.3f m at %.3f m/s; "
             "left=%.2f deg at %.3f rad/s; "
-            "right=%.2f deg at %.3f rad/s; rate=%.1f Hz",
+            "right=%.2f deg at %.3f rad/s; rate=%.1f Hz; odom=%s",
             self.args.action_topic,
             self.args.cmd_vel_topic,
             self.args.config_path,
@@ -355,6 +538,11 @@ class ActionToCmdVelNode:
             self.args.right_turn_angle_deg,
             self.args.right_angular_speed,
             self.args.publish_rate,
+            (
+                "{} (closed-loop)".format(self.args.odom_topic)
+                if self.args.use_odom
+                else "disabled (open-loop)"
+            ),
         )
         rate = rospy.Rate(self.args.publish_rate)
 
@@ -380,7 +568,57 @@ class ActionToCmdVelNode:
                         self.watchdog_reported = True
 
                 if self.active_motion is not None:
-                    if now >= self.active_until:
+                    if self.active_controller is not None:
+                        odom = self._fresh_odom(now)
+                        if odom is None:
+                            self._stop_active_action(
+                                "odometry missing or stale"
+                            )
+                            rospy.logerr(
+                                "Odometry on %s is older than %.3f s; "
+                                "active chassis action was stopped.",
+                                self.args.odom_topic,
+                                self.args.odom_stale_timeout,
+                            )
+                        else:
+                            step = self.active_controller.step(odom[0], now)
+                            if step.status == "target_reached":
+                                action = self.active_action
+                                progress = step.progress
+                                self._stop_active_action(
+                                    "odometry target reached"
+                                )
+                                if action == "MOVE_FORWARD":
+                                    rospy.loginfo(
+                                        "action=%s measured_distance=%.3f m",
+                                        action,
+                                        progress,
+                                    )
+                                else:
+                                    rospy.loginfo(
+                                        "action=%s measured_angle=%.2f deg",
+                                        action,
+                                        math.degrees(progress),
+                                    )
+                            elif step.status == "timeout":
+                                action = self.active_action
+                                self._stop_active_action(
+                                    "odometry target timeout"
+                                )
+                                rospy.logerr(
+                                    "action=%s timed out with %.4f target "
+                                    "remaining; chassis stopped",
+                                    action,
+                                    step.remaining,
+                                )
+                            else:
+                                self.velocity_publisher.publish(
+                                    make_twist(
+                                        step.linear_x,
+                                        step.angular_z,
+                                    )
+                                )
+                    elif now >= self.active_until:
                         self._stop_active_action("target duration reached")
                     else:
                         self.velocity_publisher.publish(
@@ -404,6 +642,7 @@ class ActionToCmdVelNode:
         with self.lock:
             self.active_action = None
             self.active_motion = None
+            self.active_controller = None
             for _ in range(self.args.stop_publish_count):
                 self.velocity_publisher.publish(make_twist())
                 time.sleep(0.01)
@@ -412,7 +651,7 @@ class ActionToCmdVelNode:
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Convert VLN English actions to time-bounded ROS1 Twist "
+            "Convert VLN English actions to odometry-bounded ROS1 Twist "
             "commands."
         )
     )
@@ -426,6 +665,15 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--action-topic")
     parser.add_argument("--cmd-vel-topic")
+    parser.add_argument("--odom-topic")
+    odom_group = parser.add_mutually_exclusive_group()
+    odom_group.add_argument(
+        "--use-odom", dest="use_odom", action="store_true"
+    )
+    odom_group.add_argument(
+        "--no-odom", dest="use_odom", action="store_false"
+    )
+    parser.set_defaults(use_odom=None)
     parser.add_argument("--linear-speed", type=float)
     parser.add_argument("--forward-distance", type=float)
     parser.add_argument(
@@ -445,6 +693,17 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--left-turn-angle-deg", type=float)
     parser.add_argument("--right-turn-angle-deg", type=float)
     parser.add_argument("--publish-rate", type=float)
+    parser.add_argument("--odom-stale-timeout", type=float)
+    parser.add_argument("--action-timeout-scale", type=float)
+    parser.add_argument("--minimum-action-timeout", type=float)
+    parser.add_argument("--distance-tolerance", type=float)
+    parser.add_argument("--angle-tolerance-deg", type=float)
+    parser.add_argument("--linear-slowdown-distance", type=float)
+    parser.add_argument("--angular-slowdown-angle-deg", type=float)
+    parser.add_argument("--minimum-linear-speed", type=float)
+    parser.add_argument("--minimum-angular-speed", type=float)
+    parser.add_argument("--forward-heading-kp", type=float)
+    parser.add_argument("--maximum-heading-correction", type=float)
     parser.add_argument(
         "--watchdog-timeout",
         type=float,
@@ -466,6 +725,14 @@ def validate_arguments(args) -> None:
         raise ValueError("action topic must be a non-empty string.")
     if not isinstance(args.cmd_vel_topic, str) or not args.cmd_vel_topic.strip():
         raise ValueError("cmd_vel topic must be a non-empty string.")
+    if (
+        args.use_odom
+        and (
+            not isinstance(args.odom_topic, str)
+            or not args.odom_topic.strip()
+        )
+    ):
+        raise ValueError("odom topic must be a non-empty string.")
 
     positive_values = (
         ("linear speed", args.linear_speed),
@@ -475,6 +742,20 @@ def validate_arguments(args) -> None:
         ("left turn angle", args.left_turn_angle_deg),
         ("right turn angle", args.right_turn_angle_deg),
         ("publish rate", args.publish_rate),
+        ("odom stale timeout", args.odom_stale_timeout),
+        ("action timeout scale", args.action_timeout_scale),
+        ("minimum action timeout", args.minimum_action_timeout),
+        ("distance tolerance", args.distance_tolerance),
+        ("angle tolerance", args.angle_tolerance_deg),
+        ("linear slowdown distance", args.linear_slowdown_distance),
+        ("angular slowdown angle", args.angular_slowdown_angle_deg),
+        ("minimum linear speed", args.minimum_linear_speed),
+        ("minimum angular speed", args.minimum_angular_speed),
+        ("forward heading kp", args.forward_heading_kp),
+        (
+            "maximum heading correction",
+            args.maximum_heading_correction,
+        ),
     )
     for name, value in positive_values:
         if (
@@ -484,6 +765,17 @@ def validate_arguments(args) -> None:
             or value <= 0.0
         ):
             raise ValueError("{} must be a positive finite number.".format(name))
+
+    if args.minimum_linear_speed > args.linear_speed:
+        raise ValueError(
+            "minimum linear speed must not exceed MOVE_FORWARD speed."
+        )
+    if args.minimum_angular_speed > min(
+        args.left_angular_speed, args.right_angular_speed
+    ):
+        raise ValueError(
+            "minimum angular speed must not exceed either turn speed."
+        )
 
     if (
         isinstance(args.watchdog_timeout, bool)

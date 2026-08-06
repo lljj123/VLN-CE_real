@@ -49,7 +49,7 @@ TURN_RIGHT
 ## 必要依赖
 
 - ROS Noetic：`rospy`、`rostopic`、`rosnode`
-- ROS 消息：`sensor_msgs`、`std_msgs`、`geometry_msgs`
+- ROS 消息：`sensor_msgs`、`std_msgs`、`geometry_msgs`、`nav_msgs`
 - ROS 图像：`cv_bridge`、`message_filters`
 - Python：NumPy、PyTorch、OpenCV
 
@@ -93,6 +93,19 @@ VLN_CHECKPOINT=data/checkpoints/CMA_finetuned_robot.pth \
   ./scripts/start_vln_real.sh
 ```
 
+查看微调权重内部保存的模型信息、R2R词表和参数结构：
+
+```bash
+python3 scripts/inspect_checkpoint.py
+python3 scripts/inspect_checkpoint.py --find-word hallway --find-word chair
+python3 scripts/inspect_checkpoint.py --show-vocab
+python3 scripts/inspect_checkpoint.py --list-tensors
+```
+
+默认检查 `training/checkpoints/real_cma_0p4m_30deg/best_robot.pth`，也可以
+把其他 `.pth` 路径作为第一个参数传入。检查程序只读取文件，不启动ROS或模型
+推理，也不会修改权重。
+
 默认每 5 秒最多推理并发布一次动作，持续运行：
 
 ```text
@@ -126,8 +139,10 @@ TURN_LEFT     -> linear.x = 0,    angular.z = +0.30，名义执行 30° 后停�
 TURN_RIGHT    -> linear.x = 0,    angular.z = -0.30，名义执行 30° 后停止
 ```
 
-正 `angular.z` 表示左转，负值表示右转。距离和角度目前使用“速度 × 时间”开环
-计算，轮胎打滑和底盘加减速会产生误差，因此必须在真车上标定。通常只需修改：
+正 `angular.z` 表示左转，负值表示右转。默认订阅 `/odom`
+（`nav_msgs/Odometry`），以动作开始时的位姿为基准闭环测量前进距离和偏航角；
+前进时根据初始偏航角做小幅方向纠偏，接近目标时自动降速。名义时长只作为
+里程计失效时的安全超时依据。通常修改：
 
 ```text
 MOVE_FORWARD.linear_speed_mps   前进线速度，单位 m/s
@@ -136,12 +151,21 @@ TURN_LEFT.angular_speed_radps   左转角速度，单位 rad/s
 TURN_LEFT.angle_deg             每个左转动作的角度，单位度
 TURN_RIGHT.angular_speed_radps  右转角速度绝对值，单位 rad/s
 TURN_RIGHT.angle_deg            每个右转动作的角度，单位度
+topics.odom                     里程计话题
+control.distance_tolerance_m    前进停止容差，单位 m
+control.angle_tolerance_deg     转向停止容差，单位度
+control.forward_heading_kp      前进航向纠偏比例系数
 ```
+
+`/odom` 缺失、超过 `odom_stale_timeout_s` 未更新或在动作超时前没有达到目标
+时，节点会立即发布零速度，不会退回不精确的开环动作。只有显式配置
+`control.use_odom: false` 才启用旧的速度乘时间模式。
 
 联合脚本默认读取该文件。以下环境变量仍可在本次启动时临时覆盖配置：
 
 ```bash
 VLN_CMD_VEL_TOPIC=/mobile_base/cmd_vel \
+VLN_ODOM_TOPIC=/odom \
 VLN_LINEAR_SPEED=0.05 \
 VLN_ANGULAR_SPEED=0.15 \
 VLN_FORWARD_DISTANCE=0.20 \
@@ -170,7 +194,8 @@ python3 scripts/ros_action_to_cmd_vel.py \
 rostopic pub -1 /vln/action std_msgs/String 'data: "MOVE_FORWARD"'
 ```
 
-新动作会抢占旧动作；`STOP`、未知动作、动作超时和节点退出都会发布零速度。
+新动作会抢占旧动作；`STOP`、未知动作、里程计过期、动作超时和节点退出都会
+发布零速度。
 
 ## 可视化深度和距离
 
@@ -255,6 +280,7 @@ scripts/ros_depth_hole_filler.py          深度单位转换与小孔洞填充
 scripts/ros_depth_visualizer.py           深度着色、网格距离标注和鼠标像素查询
 scripts/ros_preprocessed_rgbd_visualizer.py  查看进入 CMA 前的准确 RGB-D
 scripts/ros_vln_inference.py              RGB-D 同步、推理和动作发布
+scripts/inspect_checkpoint.py             查看 pth 元数据、词表和参数结构
 scripts/start_vln_real.sh                 一键启动
 scripts/ros_action_to_cmd_vel.py          英文动作到 Twist 的安全转换
 scripts/start_vln_with_base.sh             推理与底盘控制一键启动

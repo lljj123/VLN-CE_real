@@ -1,12 +1,25 @@
 {
   "topics": {
     "action": "/vln/action",
-    "cmd_vel": "/cmd_vel_mux/input/teleop"
+    "cmd_vel": "/cmd_vel_mux/input/teleop",
+    "odom": "/odom"
   },
   "control": {
     "publish_rate_hz": 20.0,
     "watchdog_timeout_s": 10.0,
-    "stop_publish_count": 3
+    "stop_publish_count": 3,
+    "use_odom": true,
+    "odom_stale_timeout_s": 0.5,
+    "action_timeout_scale": 3.0,
+    "minimum_action_timeout_s": 3.0,
+    "distance_tolerance_m": 0.02,
+    "angle_tolerance_deg": 2.0,
+    "linear_slowdown_distance_m": 0.12,
+    "angular_slowdown_angle_deg": 10.0,
+    "minimum_linear_speed_mps": 0.05,
+    "minimum_angular_speed_radps": 0.10,
+    "forward_heading_kp": 1.5,
+    "maximum_heading_correction_radps": 0.20
   },
   "actions": {
     "MOVE_FORWARD": {

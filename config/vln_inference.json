@@ -1,12 +1,13 @@
 {
-  "instruction": "Go straight down the long hallway.",
+  "instruction": "Go straight down the hallway. At the end of the hallway, turn left into the office and stop in front of the chair.",
   "checkpoint": "data/checkpoints/CMA_PM_DA_Aug_robot.pth",
   "topics": {
     "rgb": "/camera/rgb/image_raw",
     "depth_raw": "/camera/depth/image_raw",
     "depth_filled": "/camera/depth_registered/image_filled",
     "action": "/vln/action",
-    "cmd_vel": "/cmd_vel_mux/input/teleop"
+    "cmd_vel": "/cmd_vel_mux/input/teleop",
+    "odom": "/odom"
   },
   "inference": {
     "max_actions": 0,

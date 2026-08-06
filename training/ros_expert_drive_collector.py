@@ -7,11 +7,12 @@ For every expert command this node performs the following transaction:
 1. Freeze the latest synchronized RGB-D pair captured before the action.
 2. Save the source-resolution RGB and metric depth plus the expert label.
 3. Execute the configured discrete action on ``cmd_vel``.
-4. Stop the chassis before accepting the next expert command.
+4. Use odometry feedback to reach the configured distance/angle.
+5. Stop the chassis before accepting the next expert command.
 
 The resulting ``episode.json`` is directly compatible with
-``training/real_dataset.py``.  Motion is open-loop and must be calibrated for
-the real chassis before data collection.
+``training/real_dataset.py``.  Motion uses the same odometry-closed-loop
+configuration as deployment validation.
 """
 
 import argparse
@@ -62,6 +63,7 @@ import rosgraph  # noqa: E402
 import rospy  # noqa: E402
 from cv_bridge import CvBridge  # noqa: E402
 from geometry_msgs.msg import Twist  # noqa: E402
+from nav_msgs.msg import Odometry  # noqa: E402
 from sensor_msgs.msg import CameraInfo, Image  # noqa: E402
 from std_msgs.msg import String  # noqa: E402
 
@@ -69,6 +71,12 @@ from scripts.ros_action_to_cmd_vel import (  # noqa: E402
     MotionSettings,
     action_to_motion,
     make_twist,
+)
+from vlnce_real.odom_control import (  # noqa: E402
+    ClosedLoopMotion,
+    OdomControlSettings,
+    PlanarPose,
+    quaternion_to_yaw,
 )
 
 
@@ -125,8 +133,8 @@ def _mapping_section(mapping, name):
     return section
 
 
-def _positive_float(mapping, key, description):
-    value = mapping.get(key)
+def _positive_float(mapping, key, description, default=None):
+    value = mapping.get(key, default)
     if (
         isinstance(value, bool)
         or not isinstance(value, (int, float))
@@ -139,7 +147,21 @@ def _positive_float(mapping, key, description):
     return float(value)
 
 
-def load_motion_configuration(path_text):
+def _configuration_boolean(mapping, key, default):
+    value = mapping.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError("{} must be true or false.".format(key))
+    return value
+
+
+def _topic(mapping, key, fallback):
+    value = mapping.get(key, fallback)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("topics.{} must be a non-empty string.".format(key))
+    return value.strip()
+
+
+def load_motion_configuration(path_text, odom_topic_override=None):
     config_path = resolve_real_path(path_text)
     try:
         with config_path.open("r", encoding="utf-8") as input_file:
@@ -159,6 +181,7 @@ def load_motion_configuration(path_text):
     if not isinstance(config, dict):
         raise ValueError("Motion configuration root must be an object.")
 
+    topics = _mapping_section(config, "topics")
     control = _mapping_section(config, "control")
     actions = _mapping_section(config, "actions")
     forward = _mapping_section(actions, "MOVE_FORWARD")
@@ -196,7 +219,95 @@ def load_motion_configuration(path_text):
             right, "angle_deg", "TURN_RIGHT angle"
         ),
     )
-    return config_path, settings, publish_rate, stop_publish_count
+    use_odom = _configuration_boolean(control, "use_odom", True)
+    odom_topic = (
+        odom_topic_override.strip()
+        if isinstance(odom_topic_override, str) and odom_topic_override.strip()
+        else _topic(topics, "odom", "/odom")
+    )
+    odom_stale_timeout = _positive_float(
+        control, "odom_stale_timeout_s", "odom_stale_timeout_s", 0.5
+    )
+    odom_settings = OdomControlSettings(
+        distance_tolerance_m=_positive_float(
+            control, "distance_tolerance_m", "distance_tolerance_m", 0.02
+        ),
+        angle_tolerance_rad=math.radians(
+            _positive_float(
+                control,
+                "angle_tolerance_deg",
+                "angle_tolerance_deg",
+                2.0,
+            )
+        ),
+        linear_slowdown_distance_m=_positive_float(
+            control,
+            "linear_slowdown_distance_m",
+            "linear_slowdown_distance_m",
+            0.10,
+        ),
+        angular_slowdown_angle_rad=math.radians(
+            _positive_float(
+                control,
+                "angular_slowdown_angle_deg",
+                "angular_slowdown_angle_deg",
+                8.0,
+            )
+        ),
+        minimum_linear_speed_mps=_positive_float(
+            control,
+            "minimum_linear_speed_mps",
+            "minimum_linear_speed_mps",
+            0.05,
+        ),
+        minimum_angular_speed_radps=_positive_float(
+            control,
+            "minimum_angular_speed_radps",
+            "minimum_angular_speed_radps",
+            0.10,
+        ),
+        forward_heading_kp=_positive_float(
+            control, "forward_heading_kp", "forward_heading_kp", 1.5
+        ),
+        maximum_heading_correction_radps=_positive_float(
+            control,
+            "maximum_heading_correction_radps",
+            "maximum_heading_correction_radps",
+            0.20,
+        ),
+        action_timeout_scale=_positive_float(
+            control,
+            "action_timeout_scale",
+            "action_timeout_scale",
+            3.0,
+        ),
+        minimum_action_timeout_s=_positive_float(
+            control,
+            "minimum_action_timeout_s",
+            "minimum_action_timeout_s",
+            3.0,
+        ),
+    )
+    if odom_settings.minimum_linear_speed_mps > settings.forward_linear_speed:
+        raise ValueError(
+            "minimum_linear_speed_mps must not exceed MOVE_FORWARD speed."
+        )
+    if odom_settings.minimum_angular_speed_radps > min(
+        settings.left_angular_speed, settings.right_angular_speed
+    ):
+        raise ValueError(
+            "minimum_angular_speed_radps must not exceed either turn speed."
+        )
+    return (
+        config_path,
+        settings,
+        publish_rate,
+        stop_publish_count,
+        use_odom,
+        odom_topic,
+        odom_stale_timeout,
+        odom_settings,
+    )
 
 
 def camera_info_to_dict(message):
@@ -220,6 +331,16 @@ def camera_info_to_dict(message):
     }
 
 
+def planar_pose_to_dict(pose, ros_stamp):
+    return {
+        "x": pose.x,
+        "y": pose.y,
+        "yaw_rad": pose.yaw,
+        "yaw_deg": math.degrees(pose.yaw),
+        "stamp": ros_stamp,
+    }
+
+
 def current_topic_publishers(topic):
     resolved_topic = rospy.resolve_name(topic)
     master = rosgraph.Master(rospy.get_name())
@@ -235,8 +356,10 @@ class ExpertDriveCollector:
         self.args = args
         self.bridge = CvBridge()
         self.pair_lock = threading.Lock()
+        self.odom_lock = threading.Lock()
         self.manifest_lock = threading.RLock()
         self.latest_pair = None
+        self.latest_odom = None
         self.pair_serial = 0
         self.last_recorded_pair_serial = -1
         self.samples = []
@@ -248,7 +371,13 @@ class ExpertDriveCollector:
             self.motion_settings,
             self.publish_rate,
             self.stop_publish_count,
-        ) = load_motion_configuration(args.motion_config)
+            self.use_odom,
+            self.odom_topic,
+            self.odom_stale_timeout,
+            self.odom_settings,
+        ) = load_motion_configuration(
+            args.motion_config, odom_topic_override=args.odom_topic
+        )
 
         other_publishers = current_topic_publishers(args.cmd_vel_topic)
         if other_publishers and not args.allow_other_cmd_vel_publishers:
@@ -293,6 +422,7 @@ class ExpertDriveCollector:
                 "depth_camera_info": args.depth_camera_info_topic,
                 "expert_action": args.expert_action_topic,
                 "cmd_vel": args.cmd_vel_topic,
+                "odom": self.odom_topic,
             },
             "synchronization": {
                 "method": "ApproximateTimeSynchronizer",
@@ -304,10 +434,41 @@ class ExpertDriveCollector:
                 "depth": None,
             },
             "action_execution": {
-                "mode": "dry_run" if args.dry_run else "open_loop_cmd_vel",
+                "mode": (
+                    "dry_run"
+                    if args.dry_run
+                    else (
+                        "odom_closed_loop_cmd_vel"
+                        if self.use_odom
+                        else "open_loop_cmd_vel"
+                    )
+                ),
                 "motion_config": str(self.motion_config_path),
                 "publish_rate_hz": self.publish_rate,
                 "settle_time_seconds": args.settle_time,
+                "odom": {
+                    "enabled": self.use_odom,
+                    "topic": self.odom_topic,
+                    "stale_timeout_seconds": self.odom_stale_timeout,
+                    "distance_tolerance_m": (
+                        self.odom_settings.distance_tolerance_m
+                    ),
+                    "angle_tolerance_deg": math.degrees(
+                        self.odom_settings.angle_tolerance_rad
+                    ),
+                    "forward_heading_kp": (
+                        self.odom_settings.forward_heading_kp
+                    ),
+                    "maximum_heading_correction_radps": (
+                        self.odom_settings.maximum_heading_correction_radps
+                    ),
+                    "action_timeout_scale": (
+                        self.odom_settings.action_timeout_scale
+                    ),
+                    "minimum_action_timeout_seconds": (
+                        self.odom_settings.minimum_action_timeout_s
+                    ),
+                },
                 "MOVE_FORWARD": {
                     "linear_speed_mps": (
                         self.motion_settings.forward_linear_speed
@@ -337,6 +498,15 @@ class ExpertDriveCollector:
         self.expert_action_publisher = rospy.Publisher(
             args.expert_action_topic, String, queue_size=10
         )
+
+        self.odom_subscriber = None
+        if self.use_odom and not args.dry_run:
+            self.odom_subscriber = rospy.Subscriber(
+                self.odom_topic,
+                Odometry,
+                self._odom_callback,
+                queue_size=1,
+            )
 
         self.rgb_subscriber = message_filters.Subscriber(
             args.rgb_topic,
@@ -374,6 +544,37 @@ class ExpertDriveCollector:
                 queue_size=1,
             )
         rospy.on_shutdown(self._emergency_stop)
+
+    def _odom_callback(self, message):
+        position = message.pose.pose.position
+        orientation = message.pose.pose.orientation
+        pose = PlanarPose(
+            float(position.x),
+            float(position.y),
+            quaternion_to_yaw(
+                orientation.x,
+                orientation.y,
+                orientation.z,
+                orientation.w,
+            ),
+        )
+        with self.odom_lock:
+            self.latest_odom = (
+                pose,
+                time.monotonic(),
+                message.header.stamp.to_sec(),
+            )
+
+    def _fresh_odom(self):
+        now = time.monotonic()
+        with self.odom_lock:
+            odom = self.latest_odom
+        if odom is None:
+            return None
+        pose, arrival_time, ros_stamp = odom
+        if now - arrival_time > self.odom_stale_timeout:
+            return None
+        return pose, arrival_time, ros_stamp
 
     def _write_manifest(self):
         with self.manifest_lock:
@@ -413,7 +614,12 @@ class ExpertDriveCollector:
                 self.args.dry_run
                 or self.velocity_publisher.get_num_connections() > 0
             )
-            if pair_ready and drive_ready:
+            odom_ready = (
+                self.args.dry_run
+                or not self.use_odom
+                or self._fresh_odom() is not None
+            )
+            if pair_ready and drive_ready and odom_ready:
                 return
             time.sleep(0.1)
 
@@ -428,6 +634,16 @@ class ExpertDriveCollector:
             missing.append(
                 "a chassis subscriber on {}".format(
                     rospy.resolve_name(self.args.cmd_vel_topic)
+                )
+            )
+        if (
+            not self.args.dry_run
+            and self.use_odom
+            and self._fresh_odom() is None
+        ):
+            missing.append(
+                "fresh nav_msgs/Odometry on {}".format(
+                    rospy.resolve_name(self.odom_topic)
                 )
             )
         raise RuntimeError(
@@ -607,17 +823,102 @@ class ExpertDriveCollector:
             return
 
         self._publish_stop()
-        command = make_twist(motion.linear_x, motion.angular_z)
-        deadline = time.monotonic() + motion.duration
         rate = rospy.Rate(self.publish_rate)
         interrupted = False
-        while not rospy.is_shutdown() and time.monotonic() < deadline:
-            self.velocity_publisher.publish(command)
-            try:
-                rate.sleep()
-            except rospy.ROSInterruptException:
+        execution_error = None
+        execution_fields = {}
+        motion_started = time.monotonic()
+
+        if self.use_odom:
+            start_odom = self._fresh_odom()
+            if start_odom is None:
+                self._publish_stop()
+                self._update_execution(
+                    sample,
+                    "odom_unavailable",
+                    ended_at=datetime.now().astimezone().isoformat(),
+                )
+                raise RuntimeError(
+                    "No fresh nav_msgs/Odometry is available on {}.".format(
+                        rospy.resolve_name(self.odom_topic)
+                    )
+                )
+            controller = ClosedLoopMotion(
+                action=action,
+                start_pose=start_odom[0],
+                nominal_linear_x=motion.linear_x,
+                nominal_angular_z=motion.angular_z,
+                nominal_duration=motion.duration,
+                settings=self.odom_settings,
+                start_time=motion_started,
+            )
+            self._update_execution(
+                sample,
+                "executing",
+                control_mode="odom_closed_loop",
+                odom_start=planar_pose_to_dict(
+                    start_odom[0], start_odom[2]
+                ),
+                target=(
+                    {"distance_m": controller.target}
+                    if action == "MOVE_FORWARD"
+                    else {"angle_deg": math.degrees(controller.target)}
+                ),
+                timeout_seconds=controller.timeout_s,
+            )
+            final_step = None
+            final_odom = start_odom
+            while not rospy.is_shutdown():
+                current_odom = self._fresh_odom()
+                if current_odom is None:
+                    execution_error = "odometry became missing or stale"
+                    break
+                final_odom = current_odom
+                final_step = controller.step(
+                    current_odom[0], time.monotonic()
+                )
+                if final_step.status == "target_reached":
+                    break
+                if final_step.status == "timeout":
+                    execution_error = "odometry target timeout"
+                    break
+                self.velocity_publisher.publish(
+                    make_twist(
+                        final_step.linear_x,
+                        final_step.angular_z,
+                    )
+                )
+                try:
+                    rate.sleep()
+                except rospy.ROSInterruptException:
+                    interrupted = True
+                    break
+
+            if rospy.is_shutdown():
                 interrupted = True
-                break
+            if final_step is not None:
+                if action == "MOVE_FORWARD":
+                    execution_fields["measured_distance_m"] = (
+                        final_step.progress
+                    )
+                else:
+                    execution_fields["measured_angle_deg"] = math.degrees(
+                        final_step.progress
+                    )
+                execution_fields["remaining_target"] = final_step.remaining
+            execution_fields["odom_end"] = planar_pose_to_dict(
+                final_odom[0], final_odom[2]
+            )
+        else:
+            command = make_twist(motion.linear_x, motion.angular_z)
+            deadline = motion_started + motion.duration
+            while not rospy.is_shutdown() and time.monotonic() < deadline:
+                self.velocity_publisher.publish(command)
+                try:
+                    rate.sleep()
+                except rospy.ROSInterruptException:
+                    interrupted = True
+                    break
 
         self._publish_stop()
         settle_deadline = time.monotonic() + self.args.settle_time
@@ -632,15 +933,46 @@ class ExpertDriveCollector:
                 interrupted = True
                 break
 
-        status = "interrupted" if interrupted else "finished"
+        if execution_error is not None:
+            status = "odom_error"
+        else:
+            status = "interrupted" if interrupted else "finished"
+        execution_fields["actual_duration_seconds"] = (
+            time.monotonic() - motion_started
+        )
         self._update_execution(
             sample,
             status,
             ended_at=datetime.now().astimezone().isoformat(),
+            **execution_fields
         )
+        if execution_error is not None:
+            raise RuntimeError(
+                "Action {} failed: {}; chassis stopped.".format(
+                    action, execution_error
+                )
+            )
         if interrupted:
             raise RuntimeError("ROS shutdown interrupted chassis motion.")
-        rospy.loginfo("Executed action=%s; chassis stopped", action)
+        if self.use_odom:
+            measured = (
+                "{:.3f} m".format(
+                    execution_fields.get("measured_distance_m", 0.0)
+                )
+                if action == "MOVE_FORWARD"
+                else "{:.2f} deg".format(
+                    execution_fields.get("measured_angle_deg", 0.0)
+                )
+            )
+            rospy.loginfo(
+                "Executed action=%s using odom; measured=%s; chassis stopped",
+                action,
+                measured,
+            )
+        else:
+            rospy.loginfo(
+                "Executed action=%s open-loop; chassis stopped", action
+            )
 
     def handle_action(self, action):
         if (
@@ -652,6 +984,18 @@ class ExpertDriveCollector:
                 "No chassis subscriber is connected to {}; action was not "
                 "recorded or executed.".format(
                     rospy.resolve_name(self.args.cmd_vel_topic)
+                )
+            )
+        if (
+            action != "STOP"
+            and not self.args.dry_run
+            and self.use_odom
+            and self._fresh_odom() is None
+        ):
+            raise RuntimeError(
+                "No fresh nav_msgs/Odometry is available on {}; action was "
+                "not recorded or executed.".format(
+                    rospy.resolve_name(self.odom_topic)
                 )
             )
         sample, motion = self.record_before_action(action)
@@ -688,10 +1032,15 @@ class ExpertDriveCollector:
 
     def run(self):
         rospy.loginfo(
-            "Expert collector waiting for RGB=%s Depth=%s cmd_vel=%s",
+            "Expert collector waiting for RGB=%s Depth=%s cmd_vel=%s odom=%s",
             self.args.rgb_topic,
             self.args.depth_topic,
             self.args.cmd_vel_topic,
+            (
+                self.odom_topic
+                if self.use_odom and not self.args.dry_run
+                else "not required"
+            ),
         )
         try:
             self.wait_until_ready()
@@ -705,6 +1054,7 @@ class ExpertDriveCollector:
         print("  a = TURN_LEFT")
         print("  d = TURN_RIGHT")
         print("  s = STOP, record final sample and complete episode")
+        print("  e = complete episode without recording a STOP sample")
         print("  q = emergency stop and abort episode (excluded from training)")
         if self.args.dry_run:
             print("  DRY RUN: actions will be recorded but chassis will not move")
@@ -717,9 +1067,18 @@ class ExpertDriveCollector:
                 if command in ("q", "quit", "abort"):
                     self.finalize("aborted")
                     return 0
+                if command in ("e", "end", "finish", "complete"):
+                    if not self.samples:
+                        print(
+                            "Cannot complete an empty episode; record at "
+                            "least one action first."
+                        )
+                        continue
+                    self.finalize("complete")
+                    return 0
                 action = COMMANDS.get(command)
                 if action is None:
-                    print("Unknown command. Use w, a, d, s or q.")
+                    print("Unknown command. Use w, a, d, s, e or q.")
                     continue
                 sample_count_before = len(self.samples)
                 try:
@@ -776,6 +1135,14 @@ def build_parser():
         "--expert-action-topic", default="/vln/expert_action"
     )
     parser.add_argument("--cmd-vel-topic", default="/cmd_vel")
+    parser.add_argument(
+        "--odom-topic",
+        default=None,
+        help=(
+            "nav_msgs/Odometry feedback topic; defaults to the motion "
+            "configuration."
+        ),
+    )
     parser.add_argument(
         "--motion-config", default=str(DEFAULT_MOTION_CONFIG)
     )

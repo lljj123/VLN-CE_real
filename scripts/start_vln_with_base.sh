@@ -11,6 +11,7 @@ VLN_ROS_SETUP="${VLN_ROS_SETUP:-/opt/ros/noetic/setup.bash}"
 VLN_CONTROL_PYTHON="${VLN_PYTHON:-/usr/bin/python3}"
 
 VLN_ACTION_CONFIG="${VLN_ACTION_CONFIG:-${VLN_REPO_ROOT}/config/action_to_cmd_vel.json}"
+VLN_ODOM_STARTUP_TIMEOUT="${VLN_ODOM_STARTUP_TIMEOUT:-10}"
 VLN_CONVERTER_PID=""
 VLN_INFERENCE_PID=""
 
@@ -40,6 +41,37 @@ if [[ ! -x "${VLN_CONTROL_PYTHON}" ]]; then
     echo "[start_vln_with_base] Python not found: ${VLN_CONTROL_PYTHON}" >&2
     exit 1
 fi
+if [[ "${VLN_ACTION_CONFIG}" = /* ]]; then
+    VLN_ACTION_CONFIG_PATH="${VLN_ACTION_CONFIG}"
+else
+    VLN_ACTION_CONFIG_PATH="${VLN_REPO_ROOT}/${VLN_ACTION_CONFIG}"
+fi
+if [[ ! -f "${VLN_ACTION_CONFIG_PATH}" ]]; then
+    echo "[start_vln_with_base] Action config not found: " \
+        "${VLN_ACTION_CONFIG_PATH}" >&2
+    exit 1
+fi
+VLN_CONFIG_USE_ODOM="$("${VLN_CONTROL_PYTHON}" - \
+    "${VLN_ACTION_CONFIG_PATH}" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as input_file:
+    config = json.load(input_file)
+control = config.get("control")
+if not isinstance(control, dict):
+    raise ValueError("control must be an object")
+use_odom = control.get("use_odom", True)
+if not isinstance(use_odom, bool):
+    raise ValueError("control.use_odom must be true or false")
+print("1" if use_odom else "0")
+PY
+)"
+VLN_USE_ODOM="${VLN_USE_ODOM:-${VLN_CONFIG_USE_ODOM}}"
+if [[ "${VLN_USE_ODOM}" != "0" && "${VLN_USE_ODOM}" != "1" ]]; then
+    echo "[start_vln_with_base] VLN_USE_ODOM must be 0 or 1." >&2
+    exit 1
+fi
 
 VLN_INFERENCE_CONFIG="${VLN_INFERENCE_CONFIG:-config/vln_inference.json}"
 if [[ "${VLN_INFERENCE_CONFIG}" = /* ]]; then
@@ -63,7 +95,7 @@ topics = config.get("topics")
 if not isinstance(topics, dict):
     raise ValueError("topics must be an object")
 values = []
-for key in ("action", "cmd_vel"):
+for key in ("action", "cmd_vel", "odom"):
     value = topics.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ValueError("topics.{} must be a non-empty string".format(key))
@@ -75,12 +107,13 @@ print("\n".join(values))
 PY
 )"
 mapfile -t CONFIG_TOPICS <<< "${TOPIC_TEXT}"
-if [[ "${#CONFIG_TOPICS[@]}" -ne 2 ]]; then
+if [[ "${#CONFIG_TOPICS[@]}" -ne 3 ]]; then
     echo "[start_vln_with_base] Config parser returned incomplete topics." >&2
     exit 1
 fi
 VLN_ACTION_TOPIC="${VLN_ACTION_TOPIC:-${CONFIG_TOPICS[0]}}"
 VLN_CMD_VEL_TOPIC="${VLN_CMD_VEL_TOPIC:-${CONFIG_TOPICS[1]}}"
+VLN_ODOM_TOPIC="${VLN_ODOM_TOPIC:-${CONFIG_TOPICS[2]}}"
 
 set +u
 # shellcheck disable=SC1090
@@ -102,12 +135,20 @@ echo "[start_vln_with_base] Starting action converter:"
 echo "  config: ${VLN_ACTION_CONFIG}"
 echo "  action topic: ${VLN_ACTION_TOPIC}"
 echo "  cmd_vel topic: ${VLN_CMD_VEL_TOPIC}"
+echo "  odom topic: ${VLN_ODOM_TOPIC}"
+echo "  odom closed-loop: ${VLN_USE_ODOM}"
 VLN_CONVERTER_ARGS=(
     "${VLN_SCRIPT_DIR}/ros_action_to_cmd_vel.py"
     --config "${VLN_ACTION_CONFIG}"
     --action-topic "${VLN_ACTION_TOPIC}"
     --cmd-vel-topic "${VLN_CMD_VEL_TOPIC}"
+    --odom-topic "${VLN_ODOM_TOPIC}"
 )
+if [[ "${VLN_USE_ODOM}" == "1" ]]; then
+    VLN_CONVERTER_ARGS+=(--use-odom)
+else
+    VLN_CONVERTER_ARGS+=(--no-odom)
+fi
 if [[ -n "${VLN_LINEAR_SPEED:-}" ]]; then
     VLN_CONVERTER_ARGS+=(--linear-speed "${VLN_LINEAR_SPEED}")
 fi
@@ -134,6 +175,23 @@ if ! kill -0 "${VLN_CONVERTER_PID}" 2>/dev/null; then
     echo "[start_vln_with_base] Action converter exited during startup." >&2
     wait "${VLN_CONVERTER_PID}" || true
     exit 1
+fi
+
+if [[ "${VLN_USE_ODOM}" == "1" ]]; then
+    echo "[start_vln_with_base] Waiting for odometry on ${VLN_ODOM_TOPIC}..."
+    if ! timeout "${VLN_ODOM_STARTUP_TIMEOUT}s" rostopic echo -n 1 \
+        "${VLN_ODOM_TOPIC}/header" >/dev/null 2>&1; then
+        echo "[start_vln_with_base] No odometry received from " \
+            "${VLN_ODOM_TOPIC} within ${VLN_ODOM_STARTUP_TIMEOUT}s." >&2
+        echo "Start the chassis odometry publisher before VLN validation." >&2
+        exit 1
+    fi
+    VLN_ODOM_MESSAGE_TYPE="$(rostopic type "${VLN_ODOM_TOPIC}" 2>/dev/null || true)"
+    if [[ "${VLN_ODOM_MESSAGE_TYPE}" != "nav_msgs/Odometry" ]]; then
+        echo "[start_vln_with_base] ${VLN_ODOM_TOPIC} has type " \
+            "${VLN_ODOM_MESSAGE_TYPE:-unknown}; expected nav_msgs/Odometry." >&2
+        exit 1
+    fi
 fi
 
 export VLN_ACTION_TOPIC VLN_CMD_VEL_TOPIC VLN_ROS_SETUP VLN_INFERENCE_CONFIG

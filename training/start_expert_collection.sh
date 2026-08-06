@@ -112,6 +112,7 @@ values = [
     required_text(topics, "depth_camera_info"),
     required_text(topics, "expert_action"),
     required_text(topics, "cmd_vel"),
+    required_text(topics, "odom"),
     required_text(config, "motion_config"),
     positive_number(sync, "slop_seconds"),
     positive_number(sync, "max_pair_age_seconds"),
@@ -121,7 +122,7 @@ print("\n".join(values))
 PY
 )"
 mapfile -t CONFIG_VALUES <<< "${CONFIG_TEXT}"
-if [[ "${#CONFIG_VALUES[@]}" -ne 15 ]]; then
+if [[ "${#CONFIG_VALUES[@]}" -ne 16 ]]; then
     echo "[expert_collection] Config parser returned incomplete data." >&2
     exit 1
 fi
@@ -137,10 +138,11 @@ VLN_RGB_CAMERA_INFO_TOPIC="${VLN_RGB_CAMERA_INFO_TOPIC:-${CONFIG_VALUES[7]}}"
 VLN_DEPTH_CAMERA_INFO_TOPIC="${VLN_DEPTH_CAMERA_INFO_TOPIC:-${CONFIG_VALUES[8]}}"
 VLN_EXPERT_ACTION_TOPIC="${VLN_EXPERT_ACTION_TOPIC:-${CONFIG_VALUES[9]}}"
 VLN_CMD_VEL_TOPIC="${VLN_CMD_VEL_TOPIC:-${CONFIG_VALUES[10]}}"
-VLN_MOTION_CONFIG="${VLN_MOTION_CONFIG:-${CONFIG_VALUES[11]}}"
-VLN_SYNC_SLOP="${VLN_SYNC_SLOP:-${CONFIG_VALUES[12]}}"
-VLN_MAX_PAIR_AGE="${VLN_MAX_PAIR_AGE:-${CONFIG_VALUES[13]}}"
-VLN_SETTLE_TIME="${VLN_SETTLE_TIME:-${CONFIG_VALUES[14]}}"
+VLN_ODOM_TOPIC="${VLN_ODOM_TOPIC:-${CONFIG_VALUES[11]}}"
+VLN_MOTION_CONFIG="${VLN_MOTION_CONFIG:-${CONFIG_VALUES[12]}}"
+VLN_SYNC_SLOP="${VLN_SYNC_SLOP:-${CONFIG_VALUES[13]}}"
+VLN_MAX_PAIR_AGE="${VLN_MAX_PAIR_AGE:-${CONFIG_VALUES[14]}}"
+VLN_SETTLE_TIME="${VLN_SETTLE_TIME:-${CONFIG_VALUES[15]}}"
 VLN_EPISODE_ID="${VLN_EPISODE_ID:-${VLN_EPISODE_PREFIX}_$(date +%Y%m%d_%H%M%S_%N)}"
 
 # shellcheck disable=SC1091
@@ -167,18 +169,26 @@ for path in paths:
 import cv2
 import cv_bridge
 import message_filters
+import nav_msgs.msg
 import numpy
 import rospy
 PY
 then
     echo "[expert_collection] Python dependencies are unavailable in:" >&2
     echo "  ${VLN_PYTHON}" >&2
-    echo "Required modules: cv2, numpy, rospy, message_filters, cv_bridge" >&2
+    echo "Required modules: cv2, numpy, rospy, message_filters, cv_bridge, nav_msgs" >&2
     echo "Use VLN_PYTHON to select a compatible environment." >&2
     exit 1
 fi
 if ! rostopic list >/dev/null 2>&1; then
     echo "[expert_collection] ROS master is unreachable." >&2
+    exit 1
+fi
+VLN_ODOM_MESSAGE_TYPE="$(rostopic type "${VLN_ODOM_TOPIC}" 2>/dev/null || true)"
+if [[ -n "${VLN_ODOM_MESSAGE_TYPE}" \
+    && "${VLN_ODOM_MESSAGE_TYPE}" != "nav_msgs/Odometry" ]]; then
+    echo "[expert_collection] ${VLN_ODOM_TOPIC} has type " \
+        "${VLN_ODOM_MESSAGE_TYPE}; expected nav_msgs/Odometry." >&2
     exit 1
 fi
 
@@ -196,6 +206,7 @@ fi
 echo "[expert_collection] RGB: ${VLN_RGB_TOPIC}"
 echo "[expert_collection] Depth: ${VLN_DEPTH_FILLED_TOPIC}"
 echo "[expert_collection] Chassis: ${VLN_CMD_VEL_TOPIC}"
+echo "[expert_collection] Odometry: ${VLN_ODOM_TOPIC}"
 echo "[expert_collection] Motion config: ${VLN_MOTION_CONFIG}"
 echo "[expert_collection] Collection config: ${VLN_COLLECTION_CONFIG_PATH}"
 echo "[expert_collection] Python: ${VLN_PYTHON}"
@@ -214,6 +225,7 @@ echo "[expert_collection] Stop VLN inference/action-converter nodes before colle
     --depth-camera-info-topic "${VLN_DEPTH_CAMERA_INFO_TOPIC}" \
     --expert-action-topic "${VLN_EXPERT_ACTION_TOPIC}" \
     --cmd-vel-topic "${VLN_CMD_VEL_TOPIC}" \
+    --odom-topic "${VLN_ODOM_TOPIC}" \
     --motion-config "${VLN_MOTION_CONFIG}" \
     --sync-slop "${VLN_SYNC_SLOP}" \
     --max-pair-age "${VLN_MAX_PAIR_AGE}" \
