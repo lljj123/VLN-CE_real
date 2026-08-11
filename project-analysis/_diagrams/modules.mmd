@@ -1,0 +1,17 @@
+flowchart LR
+    CAM[ROS RGB-D camera] --> FILL[depth hole filler]
+    FILL --> INFER[ros_vln_inference.py]
+    CAM --> INFER
+    CFG[config/vln_inference.json] --> INFER
+    CKPT[robot checkpoint] --> INFER
+    INFER --> PRE[preprocessing.py]
+    PRE --> MODEL[model.py / CMAPolicy]
+    MODEL --> ENC[resnet.py / RGB & Depth encoders]
+    MODEL --> ACT["/vln/action"]
+    ACT --> BASE[ros_action_to_cmd_vel.py]
+    BASE --> CMD["/cmd_vel"]
+    DATA[real ROS episodes] --> DS[real_dataset.py]
+    DS --> TRAIN[finetune_real_cma.py]
+    CKPT --> TRAIN
+    TRAIN --> NEWCKPT[fine-tuned checkpoint]
+    NEWCKPT --> INFER

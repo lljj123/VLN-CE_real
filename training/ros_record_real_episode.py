@@ -398,7 +398,7 @@ def build_parser():
     )
     parser.add_argument(
         "--output-dir",
-        default="training/data/real_episodes_0p4m_30deg",
+        default="training/data/real_episodes_0p4m_15deg",
     )
     parser.add_argument(
         "--rgb-topic", default="/camera/rgb/image_color"

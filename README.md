@@ -102,7 +102,7 @@ python3 scripts/inspect_checkpoint.py --show-vocab
 python3 scripts/inspect_checkpoint.py --list-tensors
 ```
 
-默认检查 `training/checkpoints/real_cma_0p4m_30deg/best_robot.pth`，也可以
+默认检查 `training/checkpoints/real_cma_0p4m_15deg/best_robot.pth`，也可以
 把其他 `.pth` 路径作为第一个参数传入。检查程序只读取文件，不启动ROS或模型
 推理，也不会修改权重。
 
@@ -135,8 +135,8 @@ cd /path/to/VLN-CE_real
 ```text
 STOP          -> linear.x = 0,    angular.z = 0
 MOVE_FORWARD  -> linear.x = 0.20, angular.z = 0，名义执行 0.40 m（约 2 秒）后停止
-TURN_LEFT     -> linear.x = 0,    angular.z = +0.30，名义执行 30° 后停止
-TURN_RIGHT    -> linear.x = 0,    angular.z = -0.30，名义执行 30° 后停止
+TURN_LEFT     -> linear.x = 0,    angular.z = +0.50，名义执行 15° 后停止
+TURN_RIGHT    -> linear.x = 0,    angular.z = -0.50，名义执行 15° 后停止
 ```
 
 正 `angular.z` 表示左转，负值表示右转。默认订阅 `/odom`
@@ -197,77 +197,32 @@ rostopic pub -1 /vln/action std_msgs/String 'data: "MOVE_FORWARD"'
 新动作会抢占旧动作；`STOP`、未知动作、里程计过期、动作超时和节点退出都会
 发布零速度。
 
-## 可视化深度和距离
+## RGB-D Action 可视化（单帧/多帧记忆）
 
-`ros_depth_visualizer.py` 可直接订阅 ROS 深度图，将深度着色，并在规则网格上
-标出距离（米）。窗口中移动鼠标可读取任意像素的精确距离；左键锁定位置，右键
-解除锁定，按 `q` 或 `Esc` 退出。节点同时发布带标注的 `bgr8` 图像到
-`/camera/depth_registered/image_visualized`。
-
-启动 ROS Master 和相机驱动后运行：
+从真实数据集中选择一张 RGB（JPG/PNG）和同一 sample 的米制 Depth
+（float32 NPY/NPZ），填写英文 instruction，然后查看确定性 action 和四类动作
+概率：
 
 ```bash
-cd /path/to/VLN-CE_real
-python3 scripts/ros_depth_visualizer.py
+./scripts/start_single_rgbd_action_gui.sh
 ```
 
-默认输入为 `/camera/depth_registered/image_raw`，自动识别常见的 `16UC1`
-毫米深度和 `32FC1` 米深度。若相机话题不同，可指定：
+单帧模式会把 GRU 状态清零，适合检查某一帧的视觉输出以及首帧上一动作输入。
+也可以拖入包含 `episode.json` 的文件夹，按真实推理顺序运行完整 episode：
 
 ```bash
-python3 scripts/ros_depth_visualizer.py \
-  --input-topic /camera/depth/image_raw \
-  --max-depth 5.0 \
-  --grid-columns 8 \
-  --grid-rows 6
+./scripts/start_single_rgbd_action_gui.sh \
+  --episode training/data/real_episodes_0p4m_15deg/train/EPISODE_DIR
 ```
 
-若在无桌面的机器人上运行，可只发布标注图，再在远端用 `rqt_image_view` 查看：
+多帧模式会显示时间轴、模型动作概率、专家动作、累计准确率、模型读取的上一动作
+以及 RNN 状态范数。在时间轴选中任意一帧后，可将“当前帧的上一步动作覆盖”改为
+四种动作之一；重新运行整段时，该帧只替换上一动作 embedding，不清空此前 GRU
+状态，之后的记忆会继续从修改后的结果演化。切回 `AUTO` 即撤销该帧覆盖。
 
-```bash
-python3 scripts/ros_depth_visualizer.py --no-window
-rqt_image_view /camera/depth_registered/image_visualized
-```
-
-单像素噪声较大或有空洞时，可用 `--sample-radius 2` 显示对应位置 5×5 邻域内
-有效深度的中位数；默认值 `0` 显示精确像素值。若驱动使用非标准单位，则用
-`--depth-scale` 指定“原始数值到米”的乘数。
-
-## 查看 CMA 预处理后的 RGB-D
-
-`ros_preprocessed_rgbd_visualizer.py` 会同步 RGB 与已填洞的 `32FC1` 米制 Depth，
-并直接调用推理使用的 `preprocess_rgbd()`。它不会加载 checkpoint、执行 CMA 或
-发布动作。默认打开两个独立窗口，显示真正进入网络的 `224×224 RGB` 和
-`256×256` 归一化 Depth：
-
-```bash
-cd /path/to/VLN-CE_real
-python3 scripts/ros_preprocessed_rgbd_visualizer.py
-```
-
-按 `q` 或 `Esc` 关闭。节点同时发布以下诊断话题：
-
-```text
-/vln/preprocessed/rgb          rgb8，CMA 的准确 RGB 输入
-/vln/preprocessed/depth        32FC1，CMA 的准确归一化 Depth（0～1）
-/vln/preprocessed/depth_color  bgr8，仅供人眼查看的深度颜色图
-```
-
-在无桌面的小车上可以仅发布话题，再从远端查看：
-
-```bash
-python3 scripts/ros_preprocessed_rgbd_visualizer.py --no-window
-rqt_image_view /vln/preprocessed/rgb
-rqt_image_view /vln/preprocessed/depth_color
-```
-
-若实际 RGB 话题仍为 `/camera/rgb/image_color`，启动时覆盖默认值：
-
-```bash
-python3 scripts/ros_preprocessed_rgbd_visualizer.py \
-  --rgb-topic /camera/rgb/image_color \
-  --depth-topic /camera/depth_registered/image_filled
-```
+可用 `--checkpoint` 切换权重，用 `--initial-previous-action` 指定首帧上一动作。
+该工具不依赖 ROS，但需要 PyQt5。episode 画面来自专家采集轨迹，因此这是带记忆
+的开环回放，不是模型动作驱动新画面的闭环仿真。
 
 ## 保留文件
 
@@ -277,13 +232,15 @@ config/vln_inference.json                 VLN 指令、RGB-D 输入和推理配�
 config/action_to_cmd_vel.json              底盘速度、距离和转角配置
 vlnce_real/                               独立 PyTorch CMA 网络
 scripts/ros_depth_hole_filler.py          深度单位转换与小孔洞填充
-scripts/ros_depth_visualizer.py           深度着色、网格距离标注和鼠标像素查询
-scripts/ros_preprocessed_rgbd_visualizer.py  查看进入 CMA 前的准确 RGB-D
 scripts/ros_vln_inference.py              RGB-D 同步、推理和动作发布
 scripts/inspect_checkpoint.py             查看 pth 元数据、词表和参数结构
 scripts/start_vln_real.sh                 一键启动
 scripts/ros_action_to_cmd_vel.py          英文动作到 Twist 的安全转换
 scripts/start_vln_with_base.sh             推理与底盘控制一键启动
+scripts/single_rgbd_action_gui.py          单帧/episode 记忆与上一动作调试 GUI
+scripts/start_single_rgbd_action_gui.sh    启动 RGB-D Action 调试 GUI
+training/ros_dagger_collector.py           人工门控 DAgger 数据采集
+training/start_dagger_collection.sh        一键启动 DAgger 采集
 ```
 
 ## 可选训练区

@@ -14,7 +14,7 @@ import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CHECKPOINT = (
-    "training/checkpoints/real_cma_0p4m_30deg/best_robot.pth"
+    "training/checkpoints/real_cma_0p4m_15deg/best_robot.pth"
 )
 
 

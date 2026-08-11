@@ -1,0 +1,17 @@
+flowchart LR
+    subgraph ORIGINAL[VLN-CE original]
+      OT[Full trajectory T steps] --> OP[Packed sequence GRU]
+      OP --> OM[Two memories 2x512]
+      OM --> OE[Test keeps state until done]
+      OE --> OR[done mask resets next episode]
+    end
+    subgraph REAL[VLN-CE real]
+      RT[Current launcher: up to 64 steps] --> RL[Python step-by-step GRU]
+      RL --> RM[Two memories 2x512]
+      RM --> RE[Robot test keeps state]
+      RE --> RX[No automatic reset when keep-running-after-stop]
+    end
+    OP -. equivalent recurrence .-> RL
+    TE[Training previous action: expert] -. differs after prediction error .-> TS[Test previous action: model prediction]
+    TS --> RE
+    TE --> RL

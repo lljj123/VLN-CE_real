@@ -5,6 +5,12 @@ __pycache__/
 .mypy_cache/
 .idea/
 .vscode/
+.learnings/
+*.bak
 training/checkpoints/
 training/data/real_episodes/*
 !training/data/real_episodes/.gitkeep
+training/data/Scheduled Sampling_withoutfirst/
+training/data/real_episodes_0p4m_15deg/
+training/debug_episode_splits/
+data/checkpoints/best_robot.pth

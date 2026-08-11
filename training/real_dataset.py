@@ -82,6 +82,33 @@ def discover_episodes(data_dir, split):
                     raise ValueError(
                         "invalid action at sample {}".format(expected_index)
                     )
+                expert_action = sample.get("expert_action", action)
+                expert_action_index = int(
+                    sample.get("expert_action_index", action_index)
+                )
+                if (
+                    expert_action != action
+                    or expert_action_index != action_index
+                ):
+                    raise ValueError(
+                        "expert action must match the legacy training target "
+                        "at sample {}".format(expected_index)
+                    )
+                executed_action = sample.get("executed_action", action)
+                executed_action_index = int(
+                    sample.get("executed_action_index", action_index)
+                )
+                if (
+                    executed_action_index < 0
+                    or executed_action_index >= len(ACTION_LABELS)
+                    or ACTION_LABELS[executed_action_index]
+                    != executed_action
+                ):
+                    raise ValueError(
+                        "invalid executed action at sample {}".format(
+                            expected_index
+                        )
+                    )
                 rgb_path = _contained_path(episode_root, sample["rgb"])
                 depth_path = _contained_path(
                     episode_root, sample["depth"]
@@ -97,6 +124,7 @@ def discover_episodes(data_dir, split):
                         "rgb_path": rgb_path,
                         "depth_path": depth_path,
                         "action_index": action_index,
+                        "executed_action_index": executed_action_index,
                     }
                 )
 
@@ -128,8 +156,8 @@ class RealCMASequenceDataset(Dataset):
         rgb_size,
         depth_size,
         instruction_length=200,
-        sequence_length=8,
-        sequence_stride=8,
+        sequence_length=16,
+        sequence_stride=16,
         min_depth=0.0,
         max_depth=10.0,
     ):
@@ -178,6 +206,7 @@ class RealCMASequenceDataset(Dataset):
         rgb_sequence = []
         depth_sequence = []
         actions = []
+        executed_actions = []
 
         for sample in episode["samples"][start:end]:
             bgr = cv2.imread(
@@ -203,6 +232,7 @@ class RealCMASequenceDataset(Dataset):
             rgb_sequence.append(observations["rgb"])
             depth_sequence.append(observations["depth"])
             actions.append(sample["action_index"])
+            executed_actions.append(sample["executed_action_index"])
 
         return {
             "episode_id": episode["episode_id"],
@@ -210,6 +240,9 @@ class RealCMASequenceDataset(Dataset):
             "rgb": torch.from_numpy(np.stack(rgb_sequence)),
             "depth": torch.from_numpy(np.stack(depth_sequence)),
             "actions": torch.tensor(actions, dtype=torch.long),
+            "executed_actions": torch.tensor(
+                executed_actions, dtype=torch.long
+            ),
         }
 
     def action_counts(self):
@@ -239,6 +272,9 @@ def collate_real_sequences(batch):
     actions = torch.zeros(
         batch_size, max_steps, dtype=torch.long
     )
+    executed_actions = torch.zeros(
+        batch_size, max_steps, dtype=torch.long
+    )
     valid = torch.zeros(
         batch_size, max_steps, dtype=torch.bool
     )
@@ -250,6 +286,9 @@ def collate_real_sequences(batch):
         rgb[batch_index, :steps].copy_(item["rgb"])
         depth[batch_index, :steps].copy_(item["depth"])
         actions[batch_index, :steps].copy_(item["actions"])
+        executed_actions[batch_index, :steps].copy_(
+            item["executed_actions"]
+        )
         valid[batch_index, :steps] = True
         episode_ids.append(item["episode_id"])
 
@@ -259,5 +298,6 @@ def collate_real_sequences(batch):
         "rgb": rgb,
         "depth": depth,
         "actions": actions,
+        "executed_actions": executed_actions,
         "valid": valid,
     }

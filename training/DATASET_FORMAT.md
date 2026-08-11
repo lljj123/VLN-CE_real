@@ -3,7 +3,7 @@
 数据集根目录固定为：
 
 ```text
-training/data/real_episodes_0p4m_30deg/
+training/data/real_episodes_0p4m_15deg/
 ├── train/
 │   └── hallway_001/
 │       ├── episode.json
@@ -110,4 +110,48 @@ JSON 字段为准，并使用 checkpoint 自带词表转换为 token。
 只有 `status: "complete"` 的 episode 会进入训练。按 `s` 会先记录真实终点的
 `STOP` 再正常结束；短片段尚未到终点时按 `e`，会正常保存为 `complete` 但不
 伪造 `STOP` 样本。按 `q` 或 Ctrl-C 会写入 `aborted`，保留文件供检查，但
-训练加载器会自动跳过。
+训练加载器会自动跳过。`--dry-run` 正常结束时写入 `status: "dry_run"`，同样
+只供检查而不进入训练。
+
+## DAgger 扩展字段
+
+`ros_dagger_collector.py` 仍生成 `format_version: 1`，并保留 `action` /
+`action_index` 作为专家训练目标，因此旧数据和 DAgger 数据可以放在同一个
+数据集根目录。每个 DAgger 样本还会保存：
+
+```json
+{
+  "action": "TURN_LEFT",
+  "action_index": 2,
+  "expert_action": "TURN_LEFT",
+  "expert_action_index": 2,
+  "model_action": "MOVE_FORWARD",
+  "model_action_index": 1,
+  "executed_action": "TURN_LEFT",
+  "executed_action_index": 2,
+  "previous_executed_action": "MOVE_FORWARD",
+  "previous_executed_action_index": 1,
+  "dagger": {
+    "behavior_source": "expert_override",
+    "expert_intervened": true,
+    "expert_and_executed_differ": false,
+    "model_confidence": 0.84,
+    "model_probabilities": {
+      "STOP": 0.01,
+      "MOVE_FORWARD": 0.84,
+      "TURN_LEFT": 0.13,
+      "TURN_RIGHT": 0.02
+    }
+  }
+}
+```
+
+三种动作含义不能互换：
+
+- `expert_action`：当前 RGB-D 的监督标签，用来计算分类 loss。
+- `model_action`：采集时旧模型的建议，只用于分析模型错误。
+- `executed_action`：底盘真正执行的动作，作为下一帧 CMA 的上一动作输入。
+
+普通门控覆盖时 `expert_action == executed_action`。只有显式允许模型错误探索时
+二者才可能不同；`real_dataset.py` 和 `finetune_real_cma.py` 会分别使用专家标签
+和执行历史。旧专家数据没有这些扩展字段时，加载器自动令三者等于原 `action`。

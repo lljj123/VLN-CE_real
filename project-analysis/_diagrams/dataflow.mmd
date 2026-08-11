@@ -1,0 +1,28 @@
+flowchart TD
+    RGB[RGB 224x224x3] --> RE[RGB ResNet-50]
+    DEP[Depth 256x256x1] --> DE[Depth GN-ResNet-50]
+    TXT[Instruction token ids] --> BI[50-d embedding + BiLSTM]
+    PA[Previous action / START] --> AE[32-d action embedding]
+    RE --> RF[RGB spatial features 2112x16]
+    DE --> DF[Depth spatial features 192x16]
+    RF --> RG[Global RGB 256]
+    DF --> DG[Global Depth 128]
+    RG --> G1[GRU-1: 416 to 512]
+    DG --> G1
+    AE --> G1
+    M1[(Memory 1: 512)] --> G1
+    G1 --> M1
+    G1 --> TA[State queries instruction attention]
+    BI --> TA
+    TA --> VA[Attended instruction queries visual attention]
+    RF --> VA
+    DF --> VA
+    VA --> FUSE[Fuse 1184 and compress to 512]
+    G1 --> FUSE
+    AE --> FUSE
+    FUSE --> G2[GRU-2: 512 to 512]
+    M2[(Memory 2: 512)] --> G2
+    G2 --> M2
+    G2 --> HEAD[Linear 512 to 4]
+    HEAD --> ACTION[STOP / FORWARD / LEFT / RIGHT]
+    ACTION -. next policy step .-> PA

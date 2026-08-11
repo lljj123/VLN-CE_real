@@ -46,10 +46,20 @@ if [[ ! -x "${VLN_PYTHON}" ]]; then
 fi
 
 VLN_COLLECTION_CONFIG="${VLN_COLLECTION_CONFIG:-config/expert_collection.json}"
+VLN_COLLECTOR_SCRIPT="${VLN_COLLECTOR_SCRIPT:-training/ros_expert_drive_collector.py}"
 if [[ "${VLN_COLLECTION_CONFIG}" = /* ]]; then
     VLN_COLLECTION_CONFIG_PATH="${VLN_COLLECTION_CONFIG}"
 else
     VLN_COLLECTION_CONFIG_PATH="${REAL_ROOT}/${VLN_COLLECTION_CONFIG}"
+fi
+if [[ "${VLN_COLLECTOR_SCRIPT}" = /* ]]; then
+    VLN_COLLECTOR_SCRIPT_PATH="${VLN_COLLECTOR_SCRIPT}"
+else
+    VLN_COLLECTOR_SCRIPT_PATH="${REAL_ROOT}/${VLN_COLLECTOR_SCRIPT}"
+fi
+if [[ ! -f "${VLN_COLLECTOR_SCRIPT_PATH}" ]]; then
+    echo "[expert_collection] Collector not found: ${VLN_COLLECTOR_SCRIPT_PATH}" >&2
+    exit 1
 fi
 if [[ ! -f "${VLN_COLLECTION_CONFIG_PATH}" ]]; then
     echo "[expert_collection] Config not found: ${VLN_COLLECTION_CONFIG_PATH}" >&2
@@ -180,6 +190,13 @@ then
     echo "Use VLN_PYTHON to select a compatible environment." >&2
     exit 1
 fi
+if [[ "$(basename -- "${VLN_COLLECTOR_SCRIPT_PATH}")" = "ros_dagger_collector.py" ]] \
+    && ! "${VLN_PYTHON}" -c 'import torch' >/dev/null 2>&1; then
+    echo "[expert_collection] DAgger collection requires PyTorch in:" >&2
+    echo "  ${VLN_PYTHON}" >&2
+    echo "Select the VLN environment with VLN_PYTHON." >&2
+    exit 1
+fi
 if ! rostopic list >/dev/null 2>&1; then
     echo "[expert_collection] ROS master is unreachable." >&2
     exit 1
@@ -209,12 +226,13 @@ echo "[expert_collection] Chassis: ${VLN_CMD_VEL_TOPIC}"
 echo "[expert_collection] Odometry: ${VLN_ODOM_TOPIC}"
 echo "[expert_collection] Motion config: ${VLN_MOTION_CONFIG}"
 echo "[expert_collection] Collection config: ${VLN_COLLECTION_CONFIG_PATH}"
+echo "[expert_collection] Collector: ${VLN_COLLECTOR_SCRIPT_PATH}"
 echo "[expert_collection] Python: ${VLN_PYTHON}"
 echo "[expert_collection] Episode: ${VLN_EPISODE_ID} (${VLN_DATA_SPLIT})"
 echo "[expert_collection] Instruction: ${VLN_INSTRUCTION}"
 echo "[expert_collection] Stop VLN inference/action-converter nodes before collecting."
 
-"${VLN_PYTHON}" training/ros_expert_drive_collector.py \
+"${VLN_PYTHON}" "${VLN_COLLECTOR_SCRIPT_PATH}" \
     --instruction "${VLN_INSTRUCTION}" \
     --episode-id "${VLN_EPISODE_ID}" \
     --split "${VLN_DATA_SPLIT}" \

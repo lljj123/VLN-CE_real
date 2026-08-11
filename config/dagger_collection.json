@@ -1,8 +1,9 @@
 {
   "instruction": "Go straight down the hallway. At the end of the hallway, turn left into the office and stop in front of the chair.",
-  "episode_prefix": "real_0p4m_15deg",
+  "episode_prefix": "dagger_0p4m_15deg",
   "split": "train",
   "output_dir": "training/data/real_episodes_0p4m_15deg",
+  "checkpoint": "training/checkpoints/real_cma_seq64_scheduled_sampling/best_robot.pth",
   "topics": {
     "rgb": "/camera/rgb/image_color",
     "depth_raw": "/camera/depth_registered/image_raw",

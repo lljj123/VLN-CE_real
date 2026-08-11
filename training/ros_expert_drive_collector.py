@@ -32,7 +32,7 @@ import numpy as np
 
 REAL_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = (
-    REAL_ROOT / "training" / "data" / "real_episodes_0p4m_30deg"
+    REAL_ROOT / "training" / "data" / "real_episodes_0p4m_15deg"
 )
 DEFAULT_MOTION_CONFIG = REAL_ROOT / "config" / "action_to_cmd_vel.json"
 if str(REAL_ROOT) not in sys.path:
@@ -673,10 +673,13 @@ class ExpertDriveCollector:
                 )
             return pair_serial, rgb_message, depth_message
 
-    def record_before_action(self, action):
-        pair_serial, rgb_message, depth_message = (
-            self._newest_pair_for_action(action)
-        )
+    def record_before_action(self, action, frozen_pair=None):
+        if frozen_pair is None:
+            pair_serial, rgb_message, depth_message = (
+                self._newest_pair_for_action(action)
+            )
+        else:
+            pair_serial, rgb_message, depth_message = frozen_pair
         if depth_message.encoding.upper() != "32FC1":
             raise ValueError(
                 "Expected 32FC1 depth in meters from the filled-depth topic, "
@@ -791,8 +794,11 @@ class ExpertDriveCollector:
             self.velocity_publisher.publish(make_twist())
             time.sleep(0.01)
 
-    def execute_action(self, sample, action, motion):
-        self.expert_action_publisher.publish(String(data=action))
+    def execute_action(
+        self, sample, action, motion, publish_expert_action=True
+    ):
+        if publish_expert_action:
+            self.expert_action_publisher.publish(String(data=action))
         if self.args.dry_run:
             self._update_execution(
                 sample,
@@ -1004,6 +1010,11 @@ class ExpertDriveCollector:
     def finalize(self, status):
         if self.finalized:
             return
+        if self.args.dry_run and status == "complete":
+            # A stationary dry run is useful for validating synchronization
+            # and serialization, but its repeated observations are not valid
+            # behavior-cloning transitions.
+            status = "dry_run"
         self._publish_stop()
         with self.manifest_lock:
             self.manifest["status"] = status

@@ -165,23 +165,62 @@ class CMARunner:
             1, 1, device=self.device, dtype=torch.bool
         )
 
-    def predict(self, observations: Dict[str, np.ndarray]) -> int:
+    def predict_with_details(
+        self, observations: Dict[str, np.ndarray]
+    ) -> Dict[str, object]:
+        """Advance the recurrent state and return the policy distribution.
+
+        The predicted action is provisionally stored as the next previous
+        action, matching normal autonomous inference.  A safety-gated DAgger
+        controller may call :meth:`set_previous_action` after the operator
+        chooses the action that was actually executed.
+        """
+
         observations = dict(observations)
         observations["instruction"] = self.instruction_tokens
         batch = batch_observation(observations, self.device)
+        state_norm_before = float(self.rnn_states.norm().item())
 
         with torch.no_grad():
-            actions, self.rnn_states = self.policy.act(
+            features, self.rnn_states = self.policy.net(
                 batch,
                 self.rnn_states,
                 self.prev_actions,
                 self.not_done_masks,
-                deterministic=not self.sample_actions,
             )
+            distribution = self.policy.action_distribution(features)
+            actions = (
+                distribution.sample()
+                if self.sample_actions
+                else distribution.mode()
+            )
+            probabilities = distribution.probs[0].detach().cpu().tolist()
             self.prev_actions.copy_(actions)
             self.not_done_masks.fill_(1)
 
-        return int(actions[0].item())
+        action = int(actions[0].item())
+        return {
+            "action": action,
+            "probabilities": [float(value) for value in probabilities],
+            "confidence": float(probabilities[action]),
+            "rnn_state_norm_before": state_norm_before,
+            "rnn_state_norm_after": float(self.rnn_states.norm().item()),
+        }
+
+    def set_previous_action(self, action: int) -> None:
+        """Set the action embedding input to the action physically executed."""
+
+        if (
+            isinstance(action, bool)
+            or not isinstance(action, (int, np.integer))
+            or int(action) not in ACTION_LABELS
+        ):
+            raise ValueError("Invalid previous action index: {!r}".format(action))
+        self.prev_actions.fill_(int(action))
+        self.not_done_masks.fill_(1)
+
+    def predict(self, observations: Dict[str, np.ndarray]) -> int:
+        return int(self.predict_with_details(observations)["action"])
 
 
 class RosVlnInferenceNode:

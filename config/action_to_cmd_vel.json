@@ -11,13 +11,13 @@
     "use_odom": true,
     "odom_stale_timeout_s": 0.5,
     "action_timeout_scale": 3.0,
-    "minimum_action_timeout_s": 3.0,
+    "minimum_action_timeout_s": 6.0,
     "distance_tolerance_m": 0.02,
-    "angle_tolerance_deg": 2.0,
+    "angle_tolerance_deg": 0.5,
     "linear_slowdown_distance_m": 0.12,
-    "angular_slowdown_angle_deg": 10.0,
+    "angular_slowdown_angle_deg": 3.0,
     "minimum_linear_speed_mps": 0.05,
-    "minimum_angular_speed_radps": 0.10,
+    "minimum_angular_speed_radps": 0.20,
     "forward_heading_kp": 1.5,
     "maximum_heading_correction_radps": 0.20
   },
@@ -27,12 +27,12 @@
       "distance_m": 0.40
     },
     "TURN_LEFT": {
-      "angular_speed_radps": 0.30,
-      "angle_deg": 30.0
+      "angular_speed_radps": 0.50,
+      "angle_deg": 15.0
     },
     "TURN_RIGHT": {
-      "angular_speed_radps": 0.30,
-      "angle_deg": 30.0
+      "angular_speed_radps": 0.50,
+      "angle_deg": 15.0
     }
   }
 }

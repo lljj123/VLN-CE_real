@@ -54,8 +54,8 @@ VLN_PYTHON=/usr/bin/python3 ./training/start_expert_collection.sh
 
 一次启动采集一个 episode，按 `s` 正常结束。采集同一路线多遍时，再次执行
 同一条脚本即可；它会用配置中的 `episode_prefix` 和当前时间自动生成新目录，
-不会覆盖前一次数据。当前大动作数据默认统一保存在
-`training/data/real_episodes_0p4m_30deg`，不会与旧的 `0.25m/15°` episode
+不会覆盖前一次数据。新的闭环数据默认统一保存在
+`training/data/real_episodes_0p4m_15deg`，不会与旧的 `0.40m/30°` episode
 混合。临时改变设置时仍可使用 `--instruction`、`--episode-id` 或
 `--split val` 覆盖配置文件。
 
@@ -74,9 +74,9 @@ q = 紧急停车并放弃 episode
 零速度后才允许输入下一步。短转弯片段尚未到达导航终点时使用 `e`，不能用
 错误的 `STOP` 标签结束。速度、前进距离和转向角度直接读取
 `config/action_to_cmd_vel.json`。当前名义动作是前进 `0.40m @ 0.20m/s`
-（约 2 秒）以及左右转 `30° @ 0.30rad/s`（约 1.745 秒）。
+（约 2 秒）以及左右转 `15° @ 0.50rad/s`（名义约 0.52 秒）。
 
-采集器默认订阅配置的 `/odom`，按实际里程计位移/偏航角达到 `0.40m/30°`
+采集器默认订阅配置的 `/odom`，按实际里程计位移/偏航角达到 `0.40m/15°`
 后停止，接近目标时自动降速。里程计缺失、过期或动作超时会立即停车，并把
 当前episode标为错误以防错误动作序列进入训练。采集与推理验证共用同一个
 `config/action_to_cmd_vel.json`，因此动作尺度和闭环容差一致。
@@ -108,6 +108,54 @@ VLN_DEPTH_LOG_EVERY=30 ./training/start_expert_collection.sh
 完整格式见 `training/DATASET_FORMAT.md`。采集器保存原始分辨率 RGB 和
 Depth，不会把当前可能畸变的正方形 resize 结果永久写入数据集。
 
+### 1.1 人工门控 DAgger 采集
+
+要采集模型实际运行时遇到的起点偏差、打滑和偏航状态，先编辑
+`config/dagger_collection.json`，确认其中的 `checkpoint` 正是准备部署并改进的
+权重，然后运行：
+
+```bash
+./training/start_dagger_collection.sh
+```
+
+这个节点自身完成 CMA 推理、人工确认、数据保存和离散底盘动作，不能同时运行
+`start_vln_with_base.sh`、`ros_vln_inference.py` 或
+`ros_action_to_cmd_vel.py`。默认仍写入
+`training/data/real_episodes_0p4m_15deg`，因此旧专家完整轨迹和新 DAgger 轨迹会
+在下次微调时共同使用；episode 前缀不同，不会覆盖旧数据。
+
+每一步小车保持停止，程序显示模型建议、置信度和四个动作概率，然后等待：
+
+```text
+Enter = 专家认可模型建议，执行模型动作
+w/a/d/s = 专家覆盖模型建议，执行专家动作
+e = 正常结束但不增加 STOP
+q 或 Ctrl-C = 停车并放弃本 episode
+```
+
+默认是安全门控：错误模型动作会在执行前被专家替换。起点扰动、车轮打滑以及
+此前已接受动作造成的偏差仍会产生真实恢复画面。实验性的
+`m w / m a / m d` 会“保存指定专家标签，但故意执行模型建议”，只有设置
+`VLN_DAGGER_ALLOW_MODEL_MISTAKE=1` 才会开放；这会让小车主动进入模型错误状态，
+必须在空旷区域、低速并有人随时 Ctrl-C 急停时使用。
+
+需要临时换权重或仅验证流程时：
+
+```bash
+VLN_DAGGER_CHECKPOINT=training/checkpoints/my_run/best_robot.pth \
+  ./training/start_dagger_collection.sh
+
+./training/start_dagger_collection.sh \
+  --episode-id dagger_dry_run_001 --dry-run --cpu
+```
+
+`--dry-run` 结束的 episode 会写成 `status: "dry_run"`，训练加载器会跳过，
+不会把“画面不动但动作标签变化”的调试样本混进训练集。
+
+采集器不会把 GRU 张量当作训练数据保存。它保存每一步的模型建议、专家标签、
+真实执行动作及 GRU 范数诊断；训练时用专家动作计算 loss，用真实执行动作作为
+下一帧的上一动作输入，从而用新权重重新构建正确的记忆。
+
 ## 2. 通过外部专家动作话题采集
 
 先启动 ROS Master、深度相机和真实小车的人工/遥控控制程序，然后执行：
@@ -135,7 +183,7 @@ rostopic pub -1 /vln/expert_action std_msgs/String "data: 'STOP'"
 采集结果：
 
 ```text
-training/data/real_episodes_0p4m_30deg/train/room01_run01/
+training/data/real_episodes_0p4m_15deg/train/room01_run01/
 ├── episode.json
 ├── rgb/000000.jpg
 └── depth/000000.npy
@@ -170,8 +218,8 @@ cd /path/to/VLN-CE_real
 
 ```text
 CMA_PM_DA_Aug_robot.pth（初始权重、词表、动作顺序）
-+ training/data/real_episodes_0p4m_30deg/train/（真实专家数据）
--> training/checkpoints/real_cma_0p4m_30deg/best_robot.pth（新权重）
++ training/data/real_episodes_0p4m_15deg/train/（真实专家数据）
+-> training/checkpoints/real_cma_0p4m_15deg/best_robot.pth（新权重）
 ```
 
 训练不会覆盖 `CMA_PM_DA_Aug_robot.pth`。每次采集脚本创建的是一个
@@ -181,24 +229,31 @@ episode；同一数据集根目录下所有 `status: complete` 的 train episode
 默认参数：
 
 ```text
-200 epochs
+100 epochs
 batch size 2
-连续 8 步序列
+连续 16 步序列
 learning rate 1e-5
-冻结 RGB/Depth ResNet 和词嵌入
+冻结 RGB/Depth ResNet、词嵌入和语言双向 LSTM
 训练 CMA 注意力、RNN 和动作分类头
 ```
 
-“连续8步序列”表示离线训练时，CMA的RNN一次按时间顺序处理最多8组
-`RGB-D + 上一步动作 + 当前专家动作`，不代表小车会一次执行8个动作，也不改变
-单步的0.40m/30°尺度。定点转弯短片段若包含转前直行、若干次转向和转后直行，
-总长度超过8时可用 `VLN_TRAIN_SEQUENCE_LENGTH=16` 训练，使完整动作切换更可能
-处于同一训练窗口。
+“连续16步序列”表示离线训练时，CMA的RNN一次按时间顺序处理最多16组
+`RGB-D + 上一步动作 + 当前专家动作`，不代表小车会一次执行16个动作，也不改变
+单步的0.40m/15°尺度。15°动作下一个90°转弯通常需要约6个转向动作，16步窗口
+更容易同时包含转弯前直行、连续转向和转弯后直行。
 
 默认冻结视觉编码器是为了降低显存和小数据过拟合风险。数据足够多后可：
 
 ```bash
 ./training/start_finetune_real.sh --train-visual-encoders
+```
+
+当前真实数据的导航指令缺少多样性，因此默认同时冻结官方预训练的语言
+双向 LSTM，避免它反复拟合同一句指令。以后拥有大量不同英文指令后，可以
+显式解冻语言 LSTM；词嵌入仍保持冻结：
+
+```bash
+./training/start_finetune_real.sh --train-instruction-lstm
 ```
 
 可选类别平衡：
@@ -210,7 +265,7 @@ learning rate 1e-5
 输出：
 
 ```text
-training/checkpoints/real_cma_0p4m_30deg/
+training/checkpoints/real_cma_0p4m_15deg/
 ├── best_robot.pth
 ├── latest_robot.pth
 ├── latest_training.pth
@@ -227,21 +282,54 @@ JSON/CSV 文件保存绘图所用的原始数值：
 
 ```bash
 VLN_TRAIN_EPOCHS=20 ./training/start_finetune_real.sh \
-  --resume training/checkpoints/real_cma_0p4m_30deg/latest_training.pth
+  --resume training/checkpoints/real_cma_0p4m_15deg/latest_training.pth
 ```
 
 `VLN_TRAIN_EPOCHS` 表示最终 epoch 编号，不是额外增加的轮数；例如已经完成
 10 轮，要再训练 10 轮就设为 20。
 
-## 5. 测试微调权重
+## 5. 从收敛模型进行 Scheduled Sampling 二阶段微调
+
+不需要从官方预训练权重重新训练。下面的启动脚本默认读取已经收敛的 sequence-64
+权重，使用新的优化器和较小学习率，在独立目录进行 100 轮二阶段微调：
 
 ```bash
-VLN_CHECKPOINT=training/checkpoints/real_cma_0p4m_30deg/best_robot.pth \
+./training/start_scheduled_sampling_finetune.sh
+```
+
+默认设置为前 5 轮只用专家上一动作，随后 45 轮把“采用模型自己上一动作”的概率
+从 0 线性增加到 20%，余下轮次保持 20%。模型动作使用确定性 `argmax`，与小车
+测试时一致。训练仍会保存 teacher-forcing 的 `train_accuracy`，并额外记录：
+
+```text
+wrong_model_previous_fraction  被采用的模型上一动作中，错误动作所占比例
+free_running_loss              整段全部使用模型上一动作时的开环 loss
+free_running_accuracy          整段全部使用模型上一动作时的开环准确率
+```
+
+可通过环境变量覆盖默认值，例如：
+
+```bash
+VLN_SS_MAX_PROB=0.30 \
+VLN_SS_WARMUP_EPOCHS=5 \
+VLN_SS_RAMP_EPOCHS=45 \
+VLN_SS_EPOCHS=100 \
+  ./training/start_scheduled_sampling_finetune.sh
+```
+
+默认输出到
+`training/checkpoints/real_cma_seq64_scheduled_sampling/`，不会覆盖原来的
+`real_cma_seq64_frozen_language` 权重。
+
+## 6. 测试微调权重
+
+```bash
+VLN_CHECKPOINT=training/checkpoints/real_cma_0p4m_15deg/best_robot.pth \
 ./scripts/start_vln_with_base.sh
 ```
 
 联合启动脚本会加载新权重，并继续使用同一个
-`config/action_to_cmd_vel.json` 执行 `0.40m/30°` 动作。先在架空轮、低速
+`config/action_to_cmd_vel.json` 执行 `0.40m/15°` 动作。先在架空轮、低速
 或安全区域测试。联合脚本会先等待 `/odom`，再启动VLN推理；验证动作同样按
 里程计闭环结束。确认验证路线效果优于原权重后，再替换默认 checkpoint。
 
@@ -250,9 +338,12 @@ VLN_CHECKPOINT=training/checkpoints/real_cma_0p4m_30deg/best_robot.pth \
 ```text
 ros_record_real_episode.py  ROS RGB-D/专家动作轨迹采集
 ros_expert_drive_collector.py  键盘专家采集并自动执行底盘动作
+ros_dagger_collector.py       人工门控、记忆一致的 DAgger 采集
 real_dataset.py             episode 校验、预处理和连续序列装载
 finetune_real_cma.py        纯 PyTorch 行为克隆微调
 start_record_real_episode.sh  一键启动深度处理与采集
 start_expert_collection.sh  一键启动键盘专家采集与底盘控制
+start_dagger_collection.sh  一键启动 DAgger 推理、接管与采集
 start_finetune_real.sh        一键启动离线微调
+start_scheduled_sampling_finetune.sh  从收敛权重进行 scheduled sampling 微调
 ```
