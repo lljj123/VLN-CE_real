@@ -35,6 +35,8 @@ git clone <repository-url>
   -> /vln/action (std_msgs/String)
   -> ros_action_to_cmd_vel.py
   -> /cmd_vel (geometry_msgs/Twist)
+  -> /vln/action_result (std_msgs/String)
+  -> 完成后使用新的 RGB-D 进行下一次推理
 ```
 
 动作内容只有：
@@ -106,12 +108,19 @@ python3 scripts/inspect_checkpoint.py --list-tensors
 把其他 `.pth` 路径作为第一个参数传入。检查程序只读取文件，不启动ROS或模型
 推理，也不会修改权重。
 
-默认每 5 秒最多推理并发布一次动作，持续运行：
+默认采用动作完成事件驱动并持续运行，不使用固定动作间隔：
 
 ```text
 inference.max_actions = 0
-inference.min_action_interval_seconds = 5.0
+inference.min_action_interval_seconds = 0.0
+inference.wait_for_action_result = true
+inference.action_result_timeout_seconds = 8.0
 ```
+
+推理节点一次只发布一个带序号的动作。转换节点到达里程计目标后在
+`/vln/action_result` 返回同一序号；推理节点随后丢弃运动期间的旧图像，等待
+完成后的第一对新 RGB-D，再立即执行下一次推理。执行失败、里程计失效或结果
+超时会终止推理，而不是让模型状态继续前进。
 
 环境变量仍可临时覆盖配置，例如 `VLN_RGB_TOPIC`、
 `VLN_DEPTH_RAW_TOPIC`、`VLN_ACTION_TOPIC` 和 `VLN_CHECKPOINT`。也可以把
@@ -127,7 +136,7 @@ cd /path/to/VLN-CE_real
 ./scripts/start_vln_with_base.sh
 ```
 
-转换节点订阅 `/vln/action` 的英文动作，并以 20 Hz 连续发布
+转换节点订阅 `/vln/action` 的英文动作或带序号 JSON 命令，并以 20 Hz 连续发布
 `geometry_msgs/Twist`。速度和动作尺度集中保存在
 [`config/action_to_cmd_vel.json`](config/action_to_cmd_vel.json)，左右转可以
 分别标定。默认映射如下：
@@ -194,8 +203,9 @@ python3 scripts/ros_action_to_cmd_vel.py \
 rostopic pub -1 /vln/action std_msgs/String 'data: "MOVE_FORWARD"'
 ```
 
-新动作会抢占旧动作；`STOP`、未知动作、里程计过期、动作超时和节点退出都会
-发布零速度。
+手工发布的纯英文动作仍然兼容。新动作会抢占旧动作；`STOP`、未知动作、
+里程计过期、动作超时和节点退出都会发布零速度。联合启动时，推理节点会等待
+当前动作结果，因此正常情况下不会用新动作抢占尚未完成的动作。
 
 ## RGB-D Action 可视化（单帧/多帧记忆）
 

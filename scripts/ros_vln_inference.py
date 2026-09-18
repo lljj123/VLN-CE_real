@@ -61,6 +61,10 @@ from cv_bridge import CvBridge  # noqa: E402
 from sensor_msgs.msg import Image  # noqa: E402
 from std_msgs.msg import String  # noqa: E402
 
+from vlnce_real.action_protocol import (  # noqa: E402
+    decode_action_result,
+    encode_action_command,
+)
 from vlnce_real.model import (  # noqa: E402
     CMAPolicy,
     DEPTH_SIZE,
@@ -78,6 +82,7 @@ ACTION_LABELS = {
     2: "TURN_LEFT",
     3: "TURN_RIGHT",
 }
+ACTION_TO_INDEX = {name: index for index, name in ACTION_LABELS.items()}
 
 
 def resolve_repo_path(path_text: str) -> Path:
@@ -166,14 +171,16 @@ class CMARunner:
         )
 
     def predict_with_details(
-        self, observations: Dict[str, np.ndarray]
+        self,
+        observations: Dict[str, np.ndarray],
+        update_previous_action: bool = True,
     ) -> Dict[str, object]:
         """Advance the recurrent state and return the policy distribution.
 
-        The predicted action is provisionally stored as the next previous
-        action, matching normal autonomous inference.  A safety-gated DAgger
-        controller may call :meth:`set_previous_action` after the operator
-        chooses the action that was actually executed.
+        By default, the predicted action is provisionally stored as the next
+        previous action, matching legacy autonomous inference.  Event-driven
+        execution disables that update and commits the action only after the
+        chassis reports successful completion.
         """
 
         observations = dict(observations)
@@ -195,7 +202,8 @@ class CMARunner:
                 else distribution.mode()
             )
             probabilities = distribution.probs[0].detach().cpu().tolist()
-            self.prev_actions.copy_(actions)
+            if update_previous_action:
+                self.prev_actions.copy_(actions)
             self.not_done_masks.fill_(1)
 
         action = int(actions[0].item())
@@ -219,8 +227,17 @@ class CMARunner:
         self.prev_actions.fill_(int(action))
         self.not_done_masks.fill_(1)
 
-    def predict(self, observations: Dict[str, np.ndarray]) -> int:
-        return int(self.predict_with_details(observations)["action"])
+    def predict(
+        self,
+        observations: Dict[str, np.ndarray],
+        update_previous_action: bool = True,
+    ) -> int:
+        return int(
+            self.predict_with_details(
+                observations,
+                update_previous_action=update_previous_action,
+            )["action"]
+        )
 
 
 class RosVlnInferenceNode:
@@ -230,8 +247,13 @@ class RosVlnInferenceNode:
         self.bridge = CvBridge()
         self.work_queue = queue.Queue(maxsize=1)
         self.stop_event = threading.Event()
+        self.state_lock = threading.Lock()
         self.action_count = 0
         self.exit_code = 0
+        self.next_command_sequence = 1
+        self.pending_command = None
+        self.process_frames_after = 0.0
+        self.shutdown_after_result = False
         self.last_inference_start_time = 0.0
         self.last_pair_time = time.monotonic()
         self.last_rgb_message_time = self.last_pair_time
@@ -258,6 +280,30 @@ class RosVlnInferenceNode:
                     "initial action may not be delivered. Use --no-publish "
                     "if only console output is needed.",
                     args.action_topic,
+                    args.publisher_wait_timeout,
+                )
+
+        self.action_result_subscriber = None
+        if args.wait_for_action_result:
+            self.action_result_subscriber = rospy.Subscriber(
+                args.action_result_topic,
+                String,
+                self._action_result_callback,
+                queue_size=10,
+            )
+            wait_started = time.monotonic()
+            while (
+                self.action_result_subscriber.get_num_connections() == 0
+                and not rospy.is_shutdown()
+                and time.monotonic() - wait_started
+                < args.publisher_wait_timeout
+            ):
+                rospy.sleep(0.05)
+            if self.action_result_subscriber.get_num_connections() == 0:
+                rospy.logwarn(
+                    "No publisher connected to %s after %.1f s; action "
+                    "execution results may time out.",
+                    args.action_result_topic,
                     args.publisher_wait_timeout,
                 )
 
@@ -299,8 +345,9 @@ class RosVlnInferenceNode:
     def _synchronized_callback(
         self, rgb_message: Image, depth_message: Image
     ) -> None:
-        self.last_pair_time = time.monotonic()
-        pair = (rgb_message, depth_message)
+        arrival_time = time.monotonic()
+        self.last_pair_time = arrival_time
+        pair = (rgb_message, depth_message, arrival_time)
         try:
             self.work_queue.put_nowait(pair)
             return
@@ -318,14 +365,104 @@ class RosVlnInferenceNode:
         except queue.Full:
             pass
 
+    def _action_result_callback(self, message: String) -> None:
+        try:
+            result = decode_action_result(message.data)
+        except ValueError as error:
+            rospy.logerr("Ignoring malformed action result: %s", error)
+            return
+
+        received_at = time.monotonic()
+        with self.state_lock:
+            pending = self.pending_command
+            if pending is None:
+                rospy.logwarn(
+                    "Ignoring action result with no command in flight: %s",
+                    message.data,
+                )
+                return
+            sequence, action_name, _sent_at = pending
+            if result.sequence != sequence or result.action != action_name:
+                rospy.logwarn(
+                    "Ignoring stale/mismatched action result: expected "
+                    "sequence=%d action=%s, got sequence=%s action=%s",
+                    sequence,
+                    action_name,
+                    result.sequence,
+                    result.action,
+                )
+                return
+
+            self.pending_command = None
+            should_shutdown = self.shutdown_after_result
+            self.shutdown_after_result = False
+            if result.status in ("succeeded", "stopped"):
+                self.runner.set_previous_action(ACTION_TO_INDEX[action_name])
+                # Only frames synchronized after the result reached this node
+                # can represent the robot's completed pose.
+                self.process_frames_after = received_at
+            else:
+                self.exit_code = 3
+
+        if result.status not in ("succeeded", "stopped"):
+            rospy.logerr(
+                "Action execution failed: sequence=%d action=%s status=%s "
+                "reason=%s",
+                sequence,
+                action_name,
+                result.status,
+                result.reason,
+            )
+            rospy.signal_shutdown("chassis action execution failed")
+            return
+
+        rospy.loginfo(
+            "Action execution complete: sequence=%d action=%s status=%s "
+            "reason=%s; waiting for a fresh RGB-D pair",
+            sequence,
+            action_name,
+            result.status,
+            result.reason,
+        )
+        if should_shutdown or (
+            action_name == "STOP" and not self.args.keep_running_after_stop
+        ):
+            rospy.signal_shutdown("navigation action sequence completed")
+
+    def _check_action_result_timeout(self, now: float) -> bool:
+        if not self.args.wait_for_action_result:
+            return False
+        with self.state_lock:
+            pending = self.pending_command
+            if pending is None:
+                return False
+            sequence, action_name, sent_at = pending
+            if now - sent_at < self.args.action_result_timeout:
+                return False
+            self.pending_command = None
+            self.exit_code = 3
+        rospy.logerr(
+            "Timed out after %.1f s waiting for action result: "
+            "sequence=%d action=%s",
+            self.args.action_result_timeout,
+            sequence,
+            action_name,
+        )
+        rospy.signal_shutdown("action result timeout")
+        return True
+
     def _worker_loop(self) -> None:
         while not self.stop_event.is_set() and not rospy.is_shutdown():
+            if self._check_action_result_timeout(time.monotonic()):
+                return
             try:
-                rgb_message, depth_message = self.work_queue.get(
+                rgb_message, depth_message, pair_arrival_time = self.work_queue.get(
                     timeout=0.2
                 )
             except queue.Empty:
                 now = time.monotonic()
+                if self._check_action_result_timeout(now):
+                    return
                 if (
                     self.args.input_timeout > 0.0
                     and now - self.last_pair_time
@@ -353,6 +490,14 @@ class RosVlnInferenceNode:
                 continue
 
             now = time.monotonic()
+            if self._check_action_result_timeout(now):
+                return
+            if self.args.wait_for_action_result:
+                with self.state_lock:
+                    command_in_flight = self.pending_command is not None
+                    process_frames_after = self.process_frames_after
+                if command_in_flight or pair_arrival_time < process_frames_after:
+                    continue
             if (
                 self.args.min_action_interval > 0.0
                 and now - self.last_inference_start_time
@@ -377,7 +522,12 @@ class RosVlnInferenceNode:
                     min_depth=self.args.min_depth,
                     max_depth=self.args.max_depth,
                 )
-                action = self.runner.predict(observations)
+                action = self.runner.predict(
+                    observations,
+                    update_previous_action=(
+                        not self.args.wait_for_action_result
+                    ),
+                )
             except Exception as error:
                 rospy.logerr("RGB-D inference failed: %s", error)
                 self.exit_code = 1
@@ -386,17 +536,37 @@ class RosVlnInferenceNode:
 
             self.action_count += 1
             action_name = ACTION_LABELS.get(action, "UNKNOWN")
+            command_sequence = None
             if self.action_publisher is not None:
-                self.action_publisher.publish(String(data=action_name))
+                if self.args.wait_for_action_result:
+                    with self.state_lock:
+                        command_sequence = self.next_command_sequence
+                        self.next_command_sequence += 1
+                        self.pending_command = (
+                            command_sequence,
+                            action_name,
+                            time.monotonic(),
+                        )
+                        self.shutdown_after_result = (
+                            self.args.max_actions > 0
+                            and self.action_count >= self.args.max_actions
+                        )
+                    command_payload = encode_action_command(
+                        command_sequence, action_name
+                    )
+                else:
+                    command_payload = action_name
+                self.action_publisher.publish(String(data=command_payload))
 
             timestamp_delta_ms = abs(
                 rgb_message.header.stamp.to_sec()
                 - depth_message.header.stamp.to_sec()
             ) * 1000.0
             rospy.loginfo(
-                "action=%s count=%d stamp_delta_ms=%.2f "
+                "action=%s sequence=%s count=%d stamp_delta_ms=%.2f "
                 "processed_invalid_depth=%.2f%%",
                 action_name,
+                command_sequence,
                 self.action_count,
                 timestamp_delta_ms,
                 100.0 * invalid_fraction,
@@ -406,9 +576,13 @@ class RosVlnInferenceNode:
                 self.args.max_actions > 0
                 and self.action_count >= self.args.max_actions
             ):
+                if self.args.wait_for_action_result:
+                    continue
                 rospy.signal_shutdown("requested action count reached")
                 return
             if action == 0 and not self.args.keep_running_after_stop:
+                if self.args.wait_for_action_result:
+                    continue
                 rospy.signal_shutdown("policy predicted STOP")
                 return
 
@@ -456,7 +630,26 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--action-topic",
         default="/vln/action",
-        help="std_msgs/String topic for predicted English action names.",
+        help="std_msgs/String topic for predicted action commands.",
+    )
+    parser.add_argument(
+        "--action-result-topic",
+        default="/vln/action_result",
+        help="std_msgs/String topic for action execution results.",
+    )
+    parser.add_argument(
+        "--wait-for-action-result",
+        action="store_true",
+        help=(
+            "Allow only one action in flight and infer again after its "
+            "successful result and a fresh RGB-D pair."
+        ),
+    )
+    parser.add_argument(
+        "--action-result-timeout",
+        type=float,
+        default=10.0,
+        help="Maximum seconds to wait for an action execution result.",
     )
     parser.add_argument(
         "--no-publish",
@@ -562,6 +755,17 @@ def validate_arguments(args) -> None:
         raise ValueError("--max-actions must be >= 0.")
     if args.publisher_wait_timeout < 0.0:
         raise ValueError("--publisher-wait-timeout must be >= 0.")
+    if not isinstance(args.action_topic, str) or not args.action_topic.strip():
+        raise ValueError("--action-topic must be a non-empty string.")
+    if (
+        not isinstance(args.action_result_topic, str)
+        or not args.action_result_topic.strip()
+    ):
+        raise ValueError("--action-result-topic must be a non-empty string.")
+    if args.wait_for_action_result and args.no_publish:
+        raise ValueError("--wait-for-action-result requires action publishing.")
+    if args.action_result_timeout <= 0.0:
+        raise ValueError("--action-result-timeout must be positive.")
     if args.min_action_interval < 0.0:
         raise ValueError("--min-action-interval must be >= 0.")
     if args.instruction_length <= 0:

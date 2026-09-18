@@ -52,6 +52,10 @@ from geometry_msgs.msg import Twist  # noqa: E402
 from nav_msgs.msg import Odometry  # noqa: E402
 from std_msgs.msg import String  # noqa: E402
 
+from vlnce_real.action_protocol import (  # noqa: E402
+    decode_action_command,
+    encode_action_result,
+)
 from vlnce_real.odom_control import (  # noqa: E402
     ClosedLoopMotion,
     OdomControlSettings,
@@ -181,6 +185,11 @@ def load_configuration(args) -> None:
         args.action_topic,
         topics.get("action"),
         "/vln/action",
+    )
+    args.action_result_topic = _first_not_none(
+        args.action_result_topic,
+        topics.get("action_result"),
+        "/vln/action_result",
     )
     args.cmd_vel_topic = _first_not_none(
         args.cmd_vel_topic,
@@ -342,9 +351,11 @@ class ActionToCmdVelNode:
         self.lock = threading.Lock()
         self.latest_odom = None
         self.pending_action = "STOP"
+        self.pending_command_sequence = None
         self.pending_sequence = 0
         self.handled_sequence = 0
         self.active_action = None
+        self.active_command_sequence = None
         self.active_motion = None
         self.active_controller = None
         self.active_until = 0.0
@@ -358,6 +369,11 @@ class ActionToCmdVelNode:
             args.cmd_vel_topic,
             Twist,
             queue_size=1,
+        )
+        self.result_publisher = rospy.Publisher(
+            args.action_result_topic,
+            String,
+            queue_size=10,
         )
         self.odom_subscriber = None
         if args.use_odom:
@@ -403,39 +419,112 @@ class ActionToCmdVelNode:
             return None
         return pose, arrival_time, ros_stamp
 
+    def _publish_result(self, sequence, action, status, reason) -> None:
+        payload = encode_action_result(
+            sequence=sequence,
+            action=action,
+            status=status,
+            reason=reason,
+        )
+        self.result_publisher.publish(String(data=payload))
+
+    def _preempt_pending_action(self, reason) -> None:
+        if self.pending_sequence == self.handled_sequence:
+            return
+        self._publish_result(
+            self.pending_command_sequence,
+            self.pending_action,
+            "preempted",
+            reason,
+        )
+        self.handled_sequence = self.pending_sequence
+
     def _action_callback(self, message: String) -> None:
         received = message.data
-        action = normalize_action(received)
-        is_valid = action in VALID_ACTIONS
-        if not is_valid:
+        try:
+            command = decode_action_command(received)
+        except ValueError as error:
+            rospy.logerr(
+                "Malformed action command %r (%s); stopping chassis.",
+                received,
+                error,
+            )
+            with self.lock:
+                self._preempt_pending_action("superseded by malformed command")
+                if self.active_action is not None:
+                    self._stop_active_action(
+                        "preempted by malformed command", "preempted"
+                    )
+                else:
+                    self.velocity_publisher.publish(make_twist())
+                    self.stop_repeats_remaining = self.args.stop_publish_count
+                self._publish_result(
+                    None, "UNKNOWN", "failed", "malformed action command"
+                )
+            return
+
+        action = normalize_action(command.action)
+        if action not in VALID_ACTIONS:
             rospy.logerr(
                 "Unsupported action %r; stopping chassis. Expected one of %s.",
-                received,
+                command.action,
                 ", ".join(sorted(VALID_ACTIONS)),
             )
-            action = "STOP"
+            with self.lock:
+                self._preempt_pending_action("superseded by invalid command")
+                if self.active_action is not None:
+                    self._stop_active_action(
+                        "preempted by invalid command", "preempted"
+                    )
+                else:
+                    self.velocity_publisher.publish(make_twist())
+                    self.stop_repeats_remaining = self.args.stop_publish_count
+                self._publish_result(
+                    command.sequence,
+                    action,
+                    "failed",
+                    "unsupported action",
+                )
+            return
 
         now = time.monotonic()
         with self.lock:
+            self._preempt_pending_action("superseded by newer command")
             self.pending_sequence += 1
             self.pending_action = action
+            self.pending_command_sequence = command.sequence
             self.last_action_time = now
             self.watchdog_reported = False
 
-            # STOP and malformed messages preempt motion in the callback.  A
-            # zero command is sent before releasing the lock, preventing the
-            # control loop from publishing one more stale motion command.
+            # STOP preempts motion in the callback.  A zero command is sent
+            # before releasing the lock, preventing the control loop from
+            # publishing one more stale motion command.
             if action == "STOP":
-                self.active_action = None
-                self.active_motion = None
-                self.active_controller = None
-                self.active_until = 0.0
-                self.stop_repeats_remaining = self.args.stop_publish_count
-                self.velocity_publisher.publish(make_twist())
+                self.handled_sequence = self.pending_sequence
+                if self.active_action is not None:
+                    self._stop_active_action(
+                        "preempted by STOP command", "preempted"
+                    )
+                else:
+                    self.stop_repeats_remaining = self.args.stop_publish_count
+                    self.velocity_publisher.publish(make_twist())
+                self._publish_result(
+                    command.sequence, action, "stopped", "stop command"
+                )
+                rospy.loginfo(
+                    "action=STOP sequence=%s cmd_vel=(0.000 m/s, 0.000 rad/s)",
+                    command.sequence,
+                )
 
     def _start_pending_action(self, now: float) -> None:
         action = self.pending_action
+        command_sequence = self.pending_command_sequence
         self.handled_sequence = self.pending_sequence
+
+        if self.active_action is not None:
+            self._stop_active_action(
+                "preempted by newer command", "preempted"
+            )
 
         # Give every newly accepted action a clean zero-velocity boundary.
         self.velocity_publisher.publish(make_twist())
@@ -446,6 +535,9 @@ class ActionToCmdVelNode:
             self.active_until = 0.0
             self.stop_repeats_remaining = self.args.stop_publish_count
             rospy.loginfo("action=STOP cmd_vel=(0.000 m/s, 0.000 rad/s)")
+            self._publish_result(
+                command_sequence, action, "stopped", "stop command"
+            )
             return
 
         motion = action_to_motion(
@@ -461,6 +553,12 @@ class ActionToCmdVelNode:
                 self.active_controller = None
                 self.active_until = 0.0
                 self.stop_repeats_remaining = self.args.stop_publish_count
+                self._publish_result(
+                    command_sequence,
+                    action,
+                    "failed",
+                    "odometry unavailable or stale",
+                )
                 rospy.logerr(
                     "action=%s rejected: no fresh odometry on %s within "
                     "%.3f s; chassis stopped",
@@ -479,6 +577,7 @@ class ActionToCmdVelNode:
                 start_time=now,
             )
         self.active_action = action
+        self.active_command_sequence = command_sequence
         self.active_motion = motion
         self.active_controller = controller
         self.active_until = now + (
@@ -510,15 +609,18 @@ class ActionToCmdVelNode:
                 motion.duration,
             )
 
-    def _stop_active_action(self, reason: str) -> None:
+    def _stop_active_action(self, reason: str, status: str) -> None:
         action = self.active_action
+        command_sequence = self.active_command_sequence
         self.active_action = None
+        self.active_command_sequence = None
         self.active_motion = None
         self.active_controller = None
         self.active_until = 0.0
         self.stop_repeats_remaining = self.args.stop_publish_count
         self.velocity_publisher.publish(make_twist())
         if action is not None:
+            self._publish_result(command_sequence, action, status, reason)
             rospy.loginfo("action=%s finished (%s); chassis stopped", action, reason)
 
     def run(self) -> None:
@@ -544,6 +646,10 @@ class ActionToCmdVelNode:
                 else "disabled (open-loop)"
             ),
         )
+        rospy.loginfo(
+            "Action execution results: %s (std_msgs/String)",
+            self.args.action_result_topic,
+        )
         rate = rospy.Rate(self.args.publish_rate)
 
         while not rospy.is_shutdown():
@@ -559,7 +665,9 @@ class ActionToCmdVelNode:
                     and now - self.last_action_time
                     >= self.args.watchdog_timeout
                 ):
-                    self._stop_active_action("action watchdog timeout")
+                    self._stop_active_action(
+                        "action watchdog timeout", "failed"
+                    )
                     if not self.watchdog_reported:
                         rospy.logwarn(
                             "No action received for %.1f s; chassis stopped.",
@@ -572,7 +680,7 @@ class ActionToCmdVelNode:
                         odom = self._fresh_odom(now)
                         if odom is None:
                             self._stop_active_action(
-                                "odometry missing or stale"
+                                "odometry missing or stale", "failed"
                             )
                             rospy.logerr(
                                 "Odometry on %s is older than %.3f s; "
@@ -586,7 +694,7 @@ class ActionToCmdVelNode:
                                 action = self.active_action
                                 progress = step.progress
                                 self._stop_active_action(
-                                    "odometry target reached"
+                                    "odometry target reached", "succeeded"
                                 )
                                 if action == "MOVE_FORWARD":
                                     rospy.loginfo(
@@ -603,7 +711,7 @@ class ActionToCmdVelNode:
                             elif step.status == "timeout":
                                 action = self.active_action
                                 self._stop_active_action(
-                                    "odometry target timeout"
+                                    "odometry target timeout", "failed"
                                 )
                                 rospy.logerr(
                                     "action=%s timed out with %.4f target "
@@ -619,7 +727,9 @@ class ActionToCmdVelNode:
                                     )
                                 )
                     elif now >= self.active_until:
-                        self._stop_active_action("target duration reached")
+                        self._stop_active_action(
+                            "target duration reached", "succeeded"
+                        )
                     else:
                         self.velocity_publisher.publish(
                             make_twist(
@@ -640,7 +750,15 @@ class ActionToCmdVelNode:
         # Publish several zeros because a single final TCPROS packet may be
         # lost while ROS connections are shutting down.
         with self.lock:
+            if self.active_action is not None:
+                self._publish_result(
+                    self.active_command_sequence,
+                    self.active_action,
+                    "failed",
+                    "action executor shutdown",
+                )
             self.active_action = None
+            self.active_command_sequence = None
             self.active_motion = None
             self.active_controller = None
             for _ in range(self.args.stop_publish_count):
@@ -664,6 +782,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--action-topic")
+    parser.add_argument("--action-result-topic")
     parser.add_argument("--cmd-vel-topic")
     parser.add_argument("--odom-topic")
     odom_group = parser.add_mutually_exclusive_group()
@@ -723,6 +842,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def validate_arguments(args) -> None:
     if not isinstance(args.action_topic, str) or not args.action_topic.strip():
         raise ValueError("action topic must be a non-empty string.")
+    if (
+        not isinstance(args.action_result_topic, str)
+        or not args.action_result_topic.strip()
+    ):
+        raise ValueError("action result topic must be a non-empty string.")
     if not isinstance(args.cmd_vel_topic, str) or not args.cmd_vel_topic.strip():
         raise ValueError("cmd_vel topic must be a non-empty string.")
     if (

@@ -6,17 +6,20 @@
     "depth_raw": "/camera/depth/image_raw",
     "depth_filled": "/camera/depth_registered/image_filled",
     "action": "/vln/action",
+    "action_result": "/vln/action_result",
     "cmd_vel": "/cmd_vel_mux/input/teleop",
     "odom": "/odom"
   },
   "inference": {
     "max_actions": 0,
-    "min_action_interval_seconds": 5.0,
+    "min_action_interval_seconds": 0.0,
     "instruction_length": 200,
     "force_cpu": false,
     "sample_actions": false,
     "publish_actions": true,
-    "keep_running_after_stop": true
+    "wait_for_action_result": true,
+    "action_result_timeout_seconds": 8.0,
+    "keep_running_after_stop": false
   },
   "synchronization": {
     "slop_seconds": 0.1,

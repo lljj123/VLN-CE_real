@@ -137,12 +137,15 @@ values = [
     text(topics, "depth_raw"),
     text(topics, "depth_filled"),
     text(topics, "action"),
+    text(topics, "action_result"),
     integer(inference, "max_actions", 0),
     number(inference, "min_action_interval_seconds", 0.0),
     integer(inference, "instruction_length", 1),
     boolean(inference, "force_cpu"),
     boolean(inference, "sample_actions"),
     boolean(inference, "publish_actions"),
+    boolean(inference, "wait_for_action_result"),
+    number(inference, "action_result_timeout_seconds", 0.0, strict=True),
     boolean(inference, "keep_running_after_stop"),
     number(sync, "slop_seconds", 0.0),
     integer(sync, "queue_size", 1),
@@ -158,7 +161,7 @@ print("\n".join(values))
 PY
 )"
 mapfile -t CONFIG_VALUES <<< "${CONFIG_TEXT}"
-if [[ "${#CONFIG_VALUES[@]}" -ne 22 ]]; then
+if [[ "${#CONFIG_VALUES[@]}" -ne 25 ]]; then
     echo "[start_vln_real] Config parser returned incomplete data." >&2
     exit 1
 fi
@@ -169,22 +172,25 @@ VLN_RGB_TOPIC="${VLN_RGB_TOPIC:-${CONFIG_VALUES[2]}}"
 VLN_DEPTH_RAW_TOPIC="${VLN_DEPTH_RAW_TOPIC:-${CONFIG_VALUES[3]}}"
 VLN_DEPTH_FILLED_TOPIC="${VLN_DEPTH_FILLED_TOPIC:-${CONFIG_VALUES[4]}}"
 VLN_ACTION_TOPIC="${VLN_ACTION_TOPIC:-${CONFIG_VALUES[5]}}"
-VLN_MAX_ACTIONS="${VLN_MAX_ACTIONS:-${CONFIG_VALUES[6]}}"
-VLN_MIN_ACTION_INTERVAL="${VLN_MIN_ACTION_INTERVAL:-${CONFIG_VALUES[7]}}"
-VLN_INSTRUCTION_LENGTH="${VLN_INSTRUCTION_LENGTH:-${CONFIG_VALUES[8]}}"
-VLN_FORCE_CPU="${VLN_FORCE_CPU:-${CONFIG_VALUES[9]}}"
-VLN_SAMPLE_ACTIONS="${VLN_SAMPLE_ACTIONS:-${CONFIG_VALUES[10]}}"
-VLN_PUBLISH_ACTIONS="${VLN_PUBLISH_ACTIONS:-${CONFIG_VALUES[11]}}"
-VLN_KEEP_RUNNING_AFTER_STOP="${VLN_KEEP_RUNNING_AFTER_STOP:-${CONFIG_VALUES[12]}}"
-VLN_SYNC_SLOP="${VLN_SYNC_SLOP:-${CONFIG_VALUES[13]}}"
-VLN_SYNC_QUEUE_SIZE="${VLN_SYNC_QUEUE_SIZE:-${CONFIG_VALUES[14]}}"
-VLN_INPUT_TIMEOUT="${VLN_INPUT_TIMEOUT:-${CONFIG_VALUES[15]}}"
-VLN_EXIT_ON_INPUT_TIMEOUT="${VLN_EXIT_ON_INPUT_TIMEOUT:-${CONFIG_VALUES[16]}}"
-VLN_STARTUP_TIMEOUT="${VLN_STARTUP_TIMEOUT:-${CONFIG_VALUES[17]}}"
-VLN_PUBLISHER_WAIT="${VLN_PUBLISHER_WAIT:-${CONFIG_VALUES[18]}}"
-VLN_MIN_DEPTH="${VLN_MIN_DEPTH:-${CONFIG_VALUES[19]}}"
-VLN_MAX_DEPTH="${VLN_MAX_DEPTH:-${CONFIG_VALUES[20]}}"
-VLN_DEPTH_LOG_EVERY="${VLN_DEPTH_LOG_EVERY:-${CONFIG_VALUES[21]}}"
+VLN_ACTION_RESULT_TOPIC="${VLN_ACTION_RESULT_TOPIC:-${CONFIG_VALUES[6]}}"
+VLN_MAX_ACTIONS="${VLN_MAX_ACTIONS:-${CONFIG_VALUES[7]}}"
+VLN_MIN_ACTION_INTERVAL="${VLN_MIN_ACTION_INTERVAL:-${CONFIG_VALUES[8]}}"
+VLN_INSTRUCTION_LENGTH="${VLN_INSTRUCTION_LENGTH:-${CONFIG_VALUES[9]}}"
+VLN_FORCE_CPU="${VLN_FORCE_CPU:-${CONFIG_VALUES[10]}}"
+VLN_SAMPLE_ACTIONS="${VLN_SAMPLE_ACTIONS:-${CONFIG_VALUES[11]}}"
+VLN_PUBLISH_ACTIONS="${VLN_PUBLISH_ACTIONS:-${CONFIG_VALUES[12]}}"
+VLN_WAIT_FOR_ACTION_RESULT="${VLN_WAIT_FOR_ACTION_RESULT:-${CONFIG_VALUES[13]}}"
+VLN_ACTION_RESULT_TIMEOUT="${VLN_ACTION_RESULT_TIMEOUT:-${CONFIG_VALUES[14]}}"
+VLN_KEEP_RUNNING_AFTER_STOP="${VLN_KEEP_RUNNING_AFTER_STOP:-${CONFIG_VALUES[15]}}"
+VLN_SYNC_SLOP="${VLN_SYNC_SLOP:-${CONFIG_VALUES[16]}}"
+VLN_SYNC_QUEUE_SIZE="${VLN_SYNC_QUEUE_SIZE:-${CONFIG_VALUES[17]}}"
+VLN_INPUT_TIMEOUT="${VLN_INPUT_TIMEOUT:-${CONFIG_VALUES[18]}}"
+VLN_EXIT_ON_INPUT_TIMEOUT="${VLN_EXIT_ON_INPUT_TIMEOUT:-${CONFIG_VALUES[19]}}"
+VLN_STARTUP_TIMEOUT="${VLN_STARTUP_TIMEOUT:-${CONFIG_VALUES[20]}}"
+VLN_PUBLISHER_WAIT="${VLN_PUBLISHER_WAIT:-${CONFIG_VALUES[21]}}"
+VLN_MIN_DEPTH="${VLN_MIN_DEPTH:-${CONFIG_VALUES[22]}}"
+VLN_MAX_DEPTH="${VLN_MAX_DEPTH:-${CONFIG_VALUES[23]}}"
+VLN_DEPTH_LOG_EVERY="${VLN_DEPTH_LOG_EVERY:-${CONFIG_VALUES[24]}}"
 
 # ROS Noetic's setup scripts are not safe under Bash nounset when a clean
 # terminal has not inherited ROS_DISTRO yet. Temporarily disable nounset only
@@ -240,6 +246,8 @@ VLN_INFERENCE_ARGS=(
     --rgb-topic "${VLN_RGB_TOPIC}"
     --depth-topic "${VLN_DEPTH_FILLED_TOPIC}"
     --action-topic "${VLN_ACTION_TOPIC}"
+    --action-result-topic "${VLN_ACTION_RESULT_TOPIC}"
+    --action-result-timeout "${VLN_ACTION_RESULT_TIMEOUT}"
     --max-actions "${VLN_MAX_ACTIONS}"
     --min-action-interval "${VLN_MIN_ACTION_INTERVAL}"
     --sync-slop "${VLN_SYNC_SLOP}"
@@ -259,6 +267,9 @@ fi
 if [[ "${VLN_PUBLISH_ACTIONS}" != "1" ]]; then
     VLN_INFERENCE_ARGS+=(--no-publish)
 fi
+if [[ "${VLN_WAIT_FOR_ACTION_RESULT}" == "1" ]]; then
+    VLN_INFERENCE_ARGS+=(--wait-for-action-result)
+fi
 if [[ "${VLN_KEEP_RUNNING_AFTER_STOP}" == "1" ]]; then
     VLN_INFERENCE_ARGS+=(--keep-running-after-stop)
 fi
@@ -272,6 +283,8 @@ echo "  config: ${VLN_INFERENCE_CONFIG_PATH}"
 echo "  checkpoint: ${VLN_CHECKPOINT}"
 echo "  instruction: ${VLN_INSTRUCTION}"
 echo "  action topic: ${VLN_ACTION_TOPIC}"
+echo "  action result topic: ${VLN_ACTION_RESULT_TOPIC}"
+echo "  wait for action result: ${VLN_WAIT_FOR_ACTION_RESULT}"
 echo "  configured max actions: ${VLN_MAX_ACTIONS}"
 echo "  configured minimum action interval: ${VLN_MIN_ACTION_INTERVAL}s"
 echo "  configured RGB-D sync slop: ${VLN_SYNC_SLOP}s"

@@ -95,7 +95,7 @@ topics = config.get("topics")
 if not isinstance(topics, dict):
     raise ValueError("topics must be an object")
 values = []
-for key in ("action", "cmd_vel", "odom"):
+for key in ("action", "action_result", "cmd_vel", "odom"):
     value = topics.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ValueError("topics.{} must be a non-empty string".format(key))
@@ -107,13 +107,14 @@ print("\n".join(values))
 PY
 )"
 mapfile -t CONFIG_TOPICS <<< "${TOPIC_TEXT}"
-if [[ "${#CONFIG_TOPICS[@]}" -ne 3 ]]; then
+if [[ "${#CONFIG_TOPICS[@]}" -ne 4 ]]; then
     echo "[start_vln_with_base] Config parser returned incomplete topics." >&2
     exit 1
 fi
 VLN_ACTION_TOPIC="${VLN_ACTION_TOPIC:-${CONFIG_TOPICS[0]}}"
-VLN_CMD_VEL_TOPIC="${VLN_CMD_VEL_TOPIC:-${CONFIG_TOPICS[1]}}"
-VLN_ODOM_TOPIC="${VLN_ODOM_TOPIC:-${CONFIG_TOPICS[2]}}"
+VLN_ACTION_RESULT_TOPIC="${VLN_ACTION_RESULT_TOPIC:-${CONFIG_TOPICS[1]}}"
+VLN_CMD_VEL_TOPIC="${VLN_CMD_VEL_TOPIC:-${CONFIG_TOPICS[2]}}"
+VLN_ODOM_TOPIC="${VLN_ODOM_TOPIC:-${CONFIG_TOPICS[3]}}"
 
 set +u
 # shellcheck disable=SC1090
@@ -134,6 +135,7 @@ fi
 echo "[start_vln_with_base] Starting action converter:"
 echo "  config: ${VLN_ACTION_CONFIG}"
 echo "  action topic: ${VLN_ACTION_TOPIC}"
+echo "  action result topic: ${VLN_ACTION_RESULT_TOPIC}"
 echo "  cmd_vel topic: ${VLN_CMD_VEL_TOPIC}"
 echo "  odom topic: ${VLN_ODOM_TOPIC}"
 echo "  odom closed-loop: ${VLN_USE_ODOM}"
@@ -141,6 +143,7 @@ VLN_CONVERTER_ARGS=(
     "${VLN_SCRIPT_DIR}/ros_action_to_cmd_vel.py"
     --config "${VLN_ACTION_CONFIG}"
     --action-topic "${VLN_ACTION_TOPIC}"
+    --action-result-topic "${VLN_ACTION_RESULT_TOPIC}"
     --cmd-vel-topic "${VLN_CMD_VEL_TOPIC}"
     --odom-topic "${VLN_ODOM_TOPIC}"
 )
@@ -194,7 +197,8 @@ if [[ "${VLN_USE_ODOM}" == "1" ]]; then
     fi
 fi
 
-export VLN_ACTION_TOPIC VLN_CMD_VEL_TOPIC VLN_ROS_SETUP VLN_INFERENCE_CONFIG
+export VLN_ACTION_TOPIC VLN_ACTION_RESULT_TOPIC VLN_CMD_VEL_TOPIC
+export VLN_ROS_SETUP VLN_INFERENCE_CONFIG
 "${VLN_SCRIPT_DIR}/start_vln_real.sh" &
 VLN_INFERENCE_PID=$!
 
