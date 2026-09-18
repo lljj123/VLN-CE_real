@@ -3,7 +3,7 @@
   "checkpoint": "data/checkpoints/CMA_PM_DA_Aug_robot.pth",
   "topics": {
     "rgb": "/camera/rgb/image_raw",
-    "depth_raw": "/camera/depth/image_raw",
+    "depth_raw": "/camera/depth_registered/image_raw",
     "depth_filled": "/camera/depth_registered/image_filled",
     "action": "/vln/action",
     "action_result": "/vln/action_result",
