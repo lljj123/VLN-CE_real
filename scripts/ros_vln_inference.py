@@ -64,6 +64,7 @@ from std_msgs.msg import String  # noqa: E402
 from vlnce_real.action_protocol import (  # noqa: E402
     decode_action_result,
     encode_action_command,
+    encode_inference_metrics,
 )
 from vlnce_real.model import (  # noqa: E402
     CMAPolicy,
@@ -261,6 +262,11 @@ class RosVlnInferenceNode:
 
         # Publishers are set up before subscribers so callbacks never race
         # against partially initialized outputs.
+        self.metrics_publisher = rospy.Publisher(
+            args.inference_metrics_topic,
+            String,
+            queue_size=10,
+        )
         self.action_publisher = None
         if not args.no_publish:
             self.action_publisher = rospy.Publisher(
@@ -507,12 +513,14 @@ class RosVlnInferenceNode:
             self.last_inference_start_time = now
 
             try:
+                pipeline_started = time.perf_counter()
                 rgb = self.bridge.imgmsg_to_cv2(
                     rgb_message, desired_encoding="rgb8"
                 )
                 depth = self.bridge.imgmsg_to_cv2(
                     depth_message, desired_encoding="passthrough"
                 )
+                conversion_finished = time.perf_counter()
                 observations, invalid_fraction = preprocess_rgbd(
                     rgb=rgb,
                     depth_m=depth,
@@ -522,12 +530,14 @@ class RosVlnInferenceNode:
                     min_depth=self.args.min_depth,
                     max_depth=self.args.max_depth,
                 )
+                preprocessing_finished = time.perf_counter()
                 action = self.runner.predict(
                     observations,
                     update_previous_action=(
                         not self.args.wait_for_action_result
                     ),
                 )
+                inference_finished = time.perf_counter()
             except Exception as error:
                 rospy.logerr("RGB-D inference failed: %s", error)
                 self.exit_code = 1
@@ -537,6 +547,7 @@ class RosVlnInferenceNode:
             self.action_count += 1
             action_name = ACTION_LABELS.get(action, "UNKNOWN")
             command_sequence = None
+            command_payload = None
             if self.action_publisher is not None:
                 if self.args.wait_for_action_result:
                     with self.state_lock:
@@ -556,18 +567,44 @@ class RosVlnInferenceNode:
                     )
                 else:
                     command_payload = action_name
-                self.action_publisher.publish(String(data=command_payload))
 
             timestamp_delta_ms = abs(
                 rgb_message.header.stamp.to_sec()
                 - depth_message.header.stamp.to_sec()
             ) * 1000.0
+            conversion_seconds = conversion_finished - pipeline_started
+            preprocess_seconds = (
+                preprocessing_finished - conversion_finished
+            )
+            model_seconds = inference_finished - preprocessing_finished
+            total_seconds = inference_finished - pipeline_started
+            metrics_payload = encode_inference_metrics(
+                sequence=command_sequence,
+                action=action_name,
+                action_count=self.action_count,
+                device=str(self.runner.device),
+                image_conversion_seconds=conversion_seconds,
+                preprocess_seconds=preprocess_seconds,
+                model_seconds=model_seconds,
+                total_seconds=total_seconds,
+                rgb_depth_delta_seconds=timestamp_delta_ms / 1000.0,
+                invalid_depth_fraction=invalid_fraction,
+                first_inference=(self.action_count == 1),
+            )
+            self.metrics_publisher.publish(String(data=metrics_payload))
+            if command_payload is not None:
+                self.action_publisher.publish(String(data=command_payload))
             rospy.loginfo(
-                "action=%s sequence=%s count=%d stamp_delta_ms=%.2f "
-                "processed_invalid_depth=%.2f%%",
+                "action=%s sequence=%s count=%d inference_ms=%.2f "
+                "model_ms=%.2f preprocess_ms=%.2f conversion_ms=%.2f "
+                "stamp_delta_ms=%.2f processed_invalid_depth=%.2f%%",
                 action_name,
                 command_sequence,
                 self.action_count,
+                1000.0 * total_seconds,
+                1000.0 * model_seconds,
+                1000.0 * preprocess_seconds,
+                1000.0 * conversion_seconds,
                 timestamp_delta_ms,
                 100.0 * invalid_fraction,
             )
@@ -636,6 +673,11 @@ def build_argument_parser() -> argparse.ArgumentParser:
         "--action-result-topic",
         default="/vln/action_result",
         help="std_msgs/String topic for action execution results.",
+    )
+    parser.add_argument(
+        "--inference-metrics-topic",
+        default="/vln/inference_metrics",
+        help="std_msgs/String topic for per-action inference timing metrics.",
     )
     parser.add_argument(
         "--wait-for-action-result",
@@ -762,6 +804,13 @@ def validate_arguments(args) -> None:
         or not args.action_result_topic.strip()
     ):
         raise ValueError("--action-result-topic must be a non-empty string.")
+    if (
+        not isinstance(args.inference_metrics_topic, str)
+        or not args.inference_metrics_topic.strip()
+    ):
+        raise ValueError(
+            "--inference-metrics-topic must be a non-empty string."
+        )
     if args.wait_for_action_result and args.no_publish:
         raise ValueError("--wait-for-action-result requires action publishing.")
     if args.action_result_timeout <= 0.0:

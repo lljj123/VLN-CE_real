@@ -7,6 +7,7 @@
     "depth_filled": "/camera/depth_registered/image_filled",
     "action": "/vln/action",
     "action_result": "/vln/action_result",
+    "inference_metrics": "/vln/inference_metrics",
     "cmd_vel": "/cmd_vel_mux/input/teleop",
     "odom": "/odom"
   },
@@ -30,6 +31,11 @@
   "startup": {
     "image_timeout_seconds": 20.0,
     "action_subscriber_wait_seconds": 5.0
+  },
+  "monitor": {
+    "gui": true,
+    "output_directory": "~/.ros/vln_action_metrics",
+    "history_size": 100
   },
   "depth": {
     "min_meters": 0.0,

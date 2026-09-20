@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # Start the action-to-Twist safety layer first, then the existing RGB-D VLN
-# pipeline.  The converter is stopped automatically when inference exits.
+# pipeline. The timing monitor has its own start_vln_action_monitor.sh script.
 
 set -Eeuo pipefail
 
@@ -95,7 +95,13 @@ topics = config.get("topics")
 if not isinstance(topics, dict):
     raise ValueError("topics must be an object")
 values = []
-for key in ("action", "action_result", "cmd_vel", "odom"):
+for key in (
+    "action",
+    "action_result",
+    "inference_metrics",
+    "cmd_vel",
+    "odom",
+):
     value = topics.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ValueError("topics.{} must be a non-empty string".format(key))
@@ -107,14 +113,15 @@ print("\n".join(values))
 PY
 )"
 mapfile -t CONFIG_TOPICS <<< "${TOPIC_TEXT}"
-if [[ "${#CONFIG_TOPICS[@]}" -ne 4 ]]; then
-    echo "[start_vln_with_base] Config parser returned incomplete topics." >&2
+if [[ "${#CONFIG_TOPICS[@]}" -ne 5 ]]; then
+    echo "[start_vln_with_base] Config parser returned incomplete data." >&2
     exit 1
 fi
 VLN_ACTION_TOPIC="${VLN_ACTION_TOPIC:-${CONFIG_TOPICS[0]}}"
 VLN_ACTION_RESULT_TOPIC="${VLN_ACTION_RESULT_TOPIC:-${CONFIG_TOPICS[1]}}"
-VLN_CMD_VEL_TOPIC="${VLN_CMD_VEL_TOPIC:-${CONFIG_TOPICS[2]}}"
-VLN_ODOM_TOPIC="${VLN_ODOM_TOPIC:-${CONFIG_TOPICS[3]}}"
+VLN_INFERENCE_METRICS_TOPIC="${VLN_INFERENCE_METRICS_TOPIC:-${CONFIG_TOPICS[2]}}"
+VLN_CMD_VEL_TOPIC="${VLN_CMD_VEL_TOPIC:-${CONFIG_TOPICS[3]}}"
+VLN_ODOM_TOPIC="${VLN_ODOM_TOPIC:-${CONFIG_TOPICS[4]}}"
 
 set +u
 # shellcheck disable=SC1090
@@ -197,7 +204,8 @@ if [[ "${VLN_USE_ODOM}" == "1" ]]; then
     fi
 fi
 
-export VLN_ACTION_TOPIC VLN_ACTION_RESULT_TOPIC VLN_CMD_VEL_TOPIC
+export VLN_ACTION_TOPIC VLN_ACTION_RESULT_TOPIC VLN_INFERENCE_METRICS_TOPIC
+export VLN_CMD_VEL_TOPIC
 export VLN_ROS_SETUP VLN_INFERENCE_CONFIG
 "${VLN_SCRIPT_DIR}/start_vln_real.sh" &
 VLN_INFERENCE_PID=$!

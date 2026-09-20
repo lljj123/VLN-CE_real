@@ -356,6 +356,11 @@ class ActionToCmdVelNode:
         self.handled_sequence = 0
         self.active_action = None
         self.active_command_sequence = None
+        self.active_started_at = None
+        self.active_control_mode = None
+        self.active_target_value = None
+        self.active_progress_value = None
+        self.active_target_unit = None
         self.active_motion = None
         self.active_controller = None
         self.active_until = 0.0
@@ -419,12 +424,28 @@ class ActionToCmdVelNode:
             return None
         return pose, arrival_time, ros_stamp
 
-    def _publish_result(self, sequence, action, status, reason) -> None:
+    def _publish_result(
+        self,
+        sequence,
+        action,
+        status,
+        reason,
+        execution_seconds=None,
+        control_mode=None,
+        target_value=None,
+        progress_value=None,
+        target_unit=None,
+    ) -> None:
         payload = encode_action_result(
             sequence=sequence,
             action=action,
             status=status,
             reason=reason,
+            execution_seconds=execution_seconds,
+            control_mode=control_mode,
+            target_value=target_value,
+            progress_value=progress_value,
+            target_unit=target_unit,
         )
         self.result_publisher.publish(String(data=payload))
 
@@ -436,6 +457,7 @@ class ActionToCmdVelNode:
             self.pending_action,
             "preempted",
             reason,
+            execution_seconds=0.0,
         )
         self.handled_sequence = self.pending_sequence
 
@@ -459,7 +481,11 @@ class ActionToCmdVelNode:
                     self.velocity_publisher.publish(make_twist())
                     self.stop_repeats_remaining = self.args.stop_publish_count
                 self._publish_result(
-                    None, "UNKNOWN", "failed", "malformed action command"
+                    None,
+                    "UNKNOWN",
+                    "failed",
+                    "malformed action command",
+                    execution_seconds=0.0,
                 )
             return
 
@@ -484,6 +510,7 @@ class ActionToCmdVelNode:
                     action,
                     "failed",
                     "unsupported action",
+                    execution_seconds=0.0,
                 )
             return
 
@@ -509,7 +536,12 @@ class ActionToCmdVelNode:
                     self.stop_repeats_remaining = self.args.stop_publish_count
                     self.velocity_publisher.publish(make_twist())
                 self._publish_result(
-                    command.sequence, action, "stopped", "stop command"
+                    command.sequence,
+                    action,
+                    "stopped",
+                    "stop command",
+                    execution_seconds=0.0,
+                    control_mode="stop",
                 )
                 rospy.loginfo(
                     "action=STOP sequence=%s cmd_vel=(0.000 m/s, 0.000 rad/s)",
@@ -536,7 +568,12 @@ class ActionToCmdVelNode:
             self.stop_repeats_remaining = self.args.stop_publish_count
             rospy.loginfo("action=STOP cmd_vel=(0.000 m/s, 0.000 rad/s)")
             self._publish_result(
-                command_sequence, action, "stopped", "stop command"
+                command_sequence,
+                action,
+                "stopped",
+                "stop command",
+                execution_seconds=0.0,
+                control_mode="stop",
             )
             return
 
@@ -558,6 +595,8 @@ class ActionToCmdVelNode:
                     action,
                     "failed",
                     "odometry unavailable or stale",
+                    execution_seconds=0.0,
+                    control_mode="odom_closed_loop",
                 )
                 rospy.logerr(
                     "action=%s rejected: no fresh odometry on %s within "
@@ -578,6 +617,7 @@ class ActionToCmdVelNode:
             )
         self.active_action = action
         self.active_command_sequence = command_sequence
+        self.active_started_at = now
         self.active_motion = motion
         self.active_controller = controller
         self.active_until = now + (
@@ -585,6 +625,14 @@ class ActionToCmdVelNode:
         )
         self.stop_repeats_remaining = 0
         if controller is not None:
+            self.active_control_mode = "odom_closed_loop"
+            self.active_progress_value = 0.0
+            if action == "MOVE_FORWARD":
+                self.active_target_value = controller.target
+                self.active_target_unit = "m"
+            else:
+                self.active_target_value = math.degrees(controller.target)
+                self.active_target_unit = "deg"
             target = (
                 "{:.3f} m".format(controller.target)
                 if action == "MOVE_FORWARD"
@@ -600,6 +648,10 @@ class ActionToCmdVelNode:
                 controller.timeout_s,
             )
         else:
+            self.active_control_mode = "open_loop"
+            self.active_target_value = motion.duration
+            self.active_progress_value = 0.0
+            self.active_target_unit = "s"
             rospy.loginfo(
                 "action=%s open_loop cmd_vel=(%.3f m/s, %.3f rad/s) "
                 "duration=%.3f s",
@@ -612,15 +664,39 @@ class ActionToCmdVelNode:
     def _stop_active_action(self, reason: str, status: str) -> None:
         action = self.active_action
         command_sequence = self.active_command_sequence
+        execution_seconds = (
+            None
+            if self.active_started_at is None
+            else max(0.0, time.monotonic() - self.active_started_at)
+        )
+        control_mode = self.active_control_mode
+        target_value = self.active_target_value
+        progress_value = self.active_progress_value
+        target_unit = self.active_target_unit
         self.active_action = None
         self.active_command_sequence = None
+        self.active_started_at = None
+        self.active_control_mode = None
+        self.active_target_value = None
+        self.active_progress_value = None
+        self.active_target_unit = None
         self.active_motion = None
         self.active_controller = None
         self.active_until = 0.0
         self.stop_repeats_remaining = self.args.stop_publish_count
         self.velocity_publisher.publish(make_twist())
         if action is not None:
-            self._publish_result(command_sequence, action, status, reason)
+            self._publish_result(
+                command_sequence,
+                action,
+                status,
+                reason,
+                execution_seconds=execution_seconds,
+                control_mode=control_mode,
+                target_value=target_value,
+                progress_value=progress_value,
+                target_unit=target_unit,
+            )
             rospy.loginfo("action=%s finished (%s); chassis stopped", action, reason)
 
     def run(self) -> None:
@@ -690,6 +766,12 @@ class ActionToCmdVelNode:
                             )
                         else:
                             step = self.active_controller.step(odom[0], now)
+                            if self.active_action == "MOVE_FORWARD":
+                                self.active_progress_value = step.progress
+                            else:
+                                self.active_progress_value = math.degrees(
+                                    step.progress
+                                )
                             if step.status == "target_reached":
                                 action = self.active_action
                                 progress = step.progress
@@ -727,10 +809,15 @@ class ActionToCmdVelNode:
                                     )
                                 )
                     elif now >= self.active_until:
+                        self.active_progress_value = self.active_target_value
                         self._stop_active_action(
                             "target duration reached", "succeeded"
                         )
                     else:
+                        self.active_progress_value = min(
+                            self.active_target_value,
+                            max(0.0, now - self.active_started_at),
+                        )
                         self.velocity_publisher.publish(
                             make_twist(
                                 self.active_motion.linear_x,
@@ -751,16 +838,9 @@ class ActionToCmdVelNode:
         # lost while ROS connections are shutting down.
         with self.lock:
             if self.active_action is not None:
-                self._publish_result(
-                    self.active_command_sequence,
-                    self.active_action,
-                    "failed",
-                    "action executor shutdown",
+                self._stop_active_action(
+                    "action executor shutdown", "failed"
                 )
-            self.active_action = None
-            self.active_command_sequence = None
-            self.active_motion = None
-            self.active_controller = None
             for _ in range(self.args.stop_publish_count):
                 self.velocity_publisher.publish(make_twist())
                 time.sleep(0.01)

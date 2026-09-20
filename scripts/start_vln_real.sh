@@ -156,12 +156,13 @@ values = [
     min_depth,
     max_depth,
     integer(depth, "log_every_frames", 0),
+    text(topics, "inference_metrics"),
 ]
 print("\n".join(values))
 PY
 )"
 mapfile -t CONFIG_VALUES <<< "${CONFIG_TEXT}"
-if [[ "${#CONFIG_VALUES[@]}" -ne 25 ]]; then
+if [[ "${#CONFIG_VALUES[@]}" -ne 26 ]]; then
     echo "[start_vln_real] Config parser returned incomplete data." >&2
     exit 1
 fi
@@ -191,6 +192,7 @@ VLN_PUBLISHER_WAIT="${VLN_PUBLISHER_WAIT:-${CONFIG_VALUES[21]}}"
 VLN_MIN_DEPTH="${VLN_MIN_DEPTH:-${CONFIG_VALUES[22]}}"
 VLN_MAX_DEPTH="${VLN_MAX_DEPTH:-${CONFIG_VALUES[23]}}"
 VLN_DEPTH_LOG_EVERY="${VLN_DEPTH_LOG_EVERY:-${CONFIG_VALUES[24]}}"
+VLN_INFERENCE_METRICS_TOPIC="${VLN_INFERENCE_METRICS_TOPIC:-${CONFIG_VALUES[25]}}"
 
 # ROS Noetic's setup scripts are not safe under Bash nounset when a clean
 # terminal has not inherited ROS_DISTRO yet. Temporarily disable nounset only
@@ -247,6 +249,7 @@ VLN_INFERENCE_ARGS=(
     --depth-topic "${VLN_DEPTH_FILLED_TOPIC}"
     --action-topic "${VLN_ACTION_TOPIC}"
     --action-result-topic "${VLN_ACTION_RESULT_TOPIC}"
+    --inference-metrics-topic "${VLN_INFERENCE_METRICS_TOPIC}"
     --action-result-timeout "${VLN_ACTION_RESULT_TIMEOUT}"
     --max-actions "${VLN_MAX_ACTIONS}"
     --min-action-interval "${VLN_MIN_ACTION_INTERVAL}"
@@ -284,6 +287,7 @@ echo "  checkpoint: ${VLN_CHECKPOINT}"
 echo "  instruction: ${VLN_INSTRUCTION}"
 echo "  action topic: ${VLN_ACTION_TOPIC}"
 echo "  action result topic: ${VLN_ACTION_RESULT_TOPIC}"
+echo "  inference metrics topic: ${VLN_INFERENCE_METRICS_TOPIC}"
 echo "  wait for action result: ${VLN_WAIT_FOR_ACTION_RESULT}"
 echo "  configured max actions: ${VLN_MAX_ACTIONS}"
 echo "  configured minimum action interval: ${VLN_MIN_ACTION_INTERVAL}s"

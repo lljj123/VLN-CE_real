@@ -3,10 +3,13 @@ import unittest
 from vlnce_real.action_protocol import (
     ActionCommand,
     ActionResult,
+    InferenceMetrics,
     decode_action_command,
     decode_action_result,
+    decode_inference_metrics,
     encode_action_command,
     encode_action_result,
+    encode_inference_metrics,
 )
 
 
@@ -38,6 +41,69 @@ class ActionProtocolTest(unittest.TestCase):
                 "MOVE_FORWARD",
                 "succeeded",
                 "odometry target reached",
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        )
+
+    def test_detailed_result_round_trip(self):
+        payload = encode_action_result(
+            4,
+            "TURN_LEFT",
+            "succeeded",
+            "odometry target reached",
+            execution_seconds=0.61,
+            control_mode="odom_closed_loop",
+            target_value=15.0,
+            progress_value=14.7,
+            target_unit="deg",
+        )
+        self.assertEqual(
+            decode_action_result(payload),
+            ActionResult(
+                4,
+                "TURN_LEFT",
+                "succeeded",
+                "odometry target reached",
+                0.61,
+                "odom_closed_loop",
+                15.0,
+                14.7,
+                "deg",
+            ),
+        )
+
+    def test_inference_metrics_round_trip(self):
+        payload = encode_inference_metrics(
+            sequence=3,
+            action="MOVE_FORWARD",
+            action_count=3,
+            device="cuda:0",
+            image_conversion_seconds=0.001,
+            preprocess_seconds=0.002,
+            model_seconds=0.011,
+            total_seconds=0.014,
+            rgb_depth_delta_seconds=0.004,
+            invalid_depth_fraction=0.03,
+            first_inference=False,
+        )
+        self.assertEqual(
+            decode_inference_metrics(payload),
+            InferenceMetrics(
+                3,
+                "MOVE_FORWARD",
+                3,
+                "cuda:0",
+                0.001,
+                0.002,
+                0.011,
+                0.014,
+                0.004,
+                0.03,
+                False,
             ),
         )
 

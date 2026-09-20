@@ -321,7 +321,69 @@ VLN_SS_EPOCHS=100 \
 `training/checkpoints/real_cma_seq64_scheduled_sampling/`，不会覆盖原来的
 `real_cma_seq64_frozen_language` 权重。
 
-## 6. 测试微调权重
+## 6. 转弯起始点加权微调
+
+当前路线在直行后没有及时进入左/右转时，使用独立的第三阶段启动脚本：
+
+```bash
+./training/start_turn_weighted_finetune.sh
+```
+
+它默认从
+`training/checkpoints/real_cma_seq64_scheduled_sampling/best_robot.pth`
+初始化新模型和新优化器，输出到
+`training/checkpoints/real_cma_seq64_turn_weighted/`，不会覆盖已有权重。
+
+默认只把“前一个专家动作与当前动作不同，并且当前动作为 `TURN_LEFT` 或
+`TURN_RIGHT`”的时间步 loss 乘以 `3.2`。第一帧、连续转弯、转弯结束、STOP
+以及 padding 都不会被当作转弯起始点。不要同时传入 `--class-balance`。
+
+```text
+turn-entry weight              3.2
+epochs                         100
+learning rate                  2e-6
+sequence length                64
+scheduled-sampling probability 40%
+```
+
+可以覆盖权重或初始 checkpoint：
+
+```bash
+VLN_TURN_ENTRY_WEIGHT=2.0 \
+VLN_TURN_BASE_CHECKPOINT=training/checkpoints/real_cma_seq64_scheduled_sampling/best_robot.pth \
+  ./training/start_turn_weighted_finetune.sh
+```
+
+训练日志额外输出 `train_turn_entry_accuracy` 和
+`free_running_turn_entry_accuracy`；JSON/CSV 同时记录对应样本数。总体
+accuracy 很高时，应优先比较转弯起始点准确率和真实小车闭环表现。
+
+### 转弯开始后提前切回直行
+
+若5.0入口加权模型已经能够开始转弯，但连续转弯步数不足，运行：
+
+```bash
+./training/start_turn_continuation_finetune.sh
+```
+
+该脚本默认从已经测试过的
+`training/checkpoints/real_cma_seq64_turn_weighted_5p0/best_robot.pth`
+开始。入口已经在基础权重中强化过，因此新阶段将入口恢复为普通权重1.0；
+把“当前专家动作和上一专家动作是同一个左/右转”的连续转弯帧设为1.5，
+同时将转弯后的第一帧 `MOVE_FORWARD` 设为1.5，平衡“继续转”和“及时结束
+转弯”。默认训练20轮、学习率1e-6，输出到：
+
+```text
+training/checkpoints/real_cma_seq64_turn_balanced_1p5/
+```
+
+对应日志新增 `train_turn_continuation_accuracy`、
+`free_running_turn_continuation_accuracy`、`train_turn_exit_accuracy`、
+`free_running_turn_exit_accuracy` 及样本数。当前数据中有45个连续左转帧、
+34个转弯退出帧，但没有连续右转帧，因此连续转弯部分主要强化左转；若需要
+持续右转，必须先采集带连续右转专家标签的数据。
+
+## 7. 测试微调权重
 
 ```bash
 VLN_CHECKPOINT=training/checkpoints/real_cma_0p4m_15deg/best_robot.pth \
@@ -346,4 +408,6 @@ start_expert_collection.sh  一键启动键盘专家采集与底盘控制
 start_dagger_collection.sh  一键启动 DAgger 推理、接管与采集
 start_finetune_real.sh        一键启动离线微调
 start_scheduled_sampling_finetune.sh  从收敛权重进行 scheduled sampling 微调
+start_turn_weighted_finetune.sh  从 scheduled-sampling 权重进行转弯起始点加权微调
+start_turn_continuation_finetune.sh  从5.0入口模型进行继续/退出平衡微调
 ```
