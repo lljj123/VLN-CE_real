@@ -54,6 +54,7 @@ TURN_RIGHT
 - ROS 消息：`sensor_msgs`、`std_msgs`、`geometry_msgs`、`nav_msgs`
 - ROS 图像：`cv_bridge`、`message_filters`
 - Python：NumPy、PyTorch、OpenCV
+- 可视化监控：Tk（Ubuntu/ROS Noetic 通常安装 `python3-tk`）
 
 验证环境为 Python 3.6.15、PyTorch 1.10.2、NumPy 1.19.5、
 OpenCV 4.5.5。小车若为 Jetson，应安装与其 JetPack 匹配的 PyTorch，
@@ -207,6 +208,53 @@ rostopic pub -1 /vln/action std_msgs/String 'data: "MOVE_FORWARD"'
 里程计过期、动作超时和节点退出都会发布零速度。联合启动时，推理节点会等待
 当前动作结果，因此正常情况下不会用新动作抢占尚未完成的动作。
 
+## Action 耗时监控
+
+监控已和导航启动脚本分离。先保证 ROS Master 已启动，然后分别在两个终端运行：
+
+```bash
+# 终端 1：监控界面（建议先启动，以免漏掉第一个 action）
+./scripts/start_vln_action_monitor.sh
+
+# 终端 2：VLN 推理和底盘
+./scripts/start_vln_with_base.sh
+```
+
+退出 `start_vln_with_base.sh` 不会关闭监控；监控需要在自己的终端按 `Ctrl+C`
+退出。窗口实时显示：
+
+- 图像消息转换、RGB-D 预处理、模型 forward 和推理总耗时；
+- 底盘实际执行时间、命令到结果的端到端时间；
+- 上一个 action 结果到下一次推理真正开始的间隔（首个 action 显示 `-`）；
+- 里程计控制模式、目标距离/角度、实际完成进度和结果原因；
+- 最近动作的端到端横向时间轴，以及单独放大的推理阶段时间轴。
+
+每次运行会把完整记录写到：
+
+```text
+~/.ros/vln_action_metrics/action_metrics_YYYYMMDD_HHMMSS.csv
+~/.ros/vln_action_metrics/action_metrics_YYYYMMDD_HHMMSS.jsonl
+```
+
+监控配置位于 `config/vln_inference.json` 的 `monitor` 段。没有桌面
+`DISPLAY`、Tk 无法初始化或显式关闭 GUI 时，监控节点会以无界面模式继续写
+CSV/JSONL，不影响底盘控制。常用临时覆盖：
+
+```bash
+# 不显示窗口，只记录文件
+VLN_MONITOR_GUI=0 ./scripts/start_vln_action_monitor.sh
+
+# 更换输出目录
+VLN_MONITOR_OUTPUT_DIRECTORY=/data/vln_metrics \
+  ./scripts/start_vln_action_monitor.sh
+```
+
+也可以绕过配置启动底层 Python 监控节点：
+
+```bash
+python3 scripts/ros_vln_action_monitor.py
+```
+
 ## RGB-D Action 可视化（单帧/多帧记忆）
 
 从真实数据集中选择一张 RGB（JPG/PNG）和同一 sample 的米制 Depth
@@ -246,6 +294,8 @@ scripts/ros_vln_inference.py              RGB-D 同步、推理和动作发布
 scripts/inspect_checkpoint.py             查看 pth 元数据、词表和参数结构
 scripts/start_vln_real.sh                 一键启动
 scripts/ros_action_to_cmd_vel.py          英文动作到 Twist 的安全转换
+scripts/ros_vln_action_monitor.py         Action 耗时记录和实时可视化
+scripts/start_vln_action_monitor.sh       单独启动 Action 耗时监控
 scripts/start_vln_with_base.sh             推理与底盘控制一键启动
 scripts/single_rgbd_action_gui.py          单帧/episode 记忆与上一动作调试 GUI
 scripts/start_single_rgbd_action_gui.sh    启动 RGB-D Action 调试 GUI

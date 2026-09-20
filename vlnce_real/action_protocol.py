@@ -42,6 +42,7 @@ class InferenceMetrics(NamedTuple):
     rgb_depth_delta_seconds: float
     invalid_depth_fraction: float
     first_inference: bool
+    result_to_inference_start_seconds: Optional[float]
 
 
 def _sequence(value):
@@ -192,6 +193,7 @@ def encode_inference_metrics(
     rgb_depth_delta_seconds,
     invalid_depth_fraction,
     first_inference,
+    result_to_inference_start_seconds=None,
 ):
     payload = {
         "version": PROTOCOL_VERSION,
@@ -206,6 +208,9 @@ def encode_inference_metrics(
         "rgb_depth_delta_seconds": rgb_depth_delta_seconds,
         "invalid_depth_fraction": invalid_depth_fraction,
         "first_inference": first_inference,
+        "result_to_inference_start_seconds": (
+            result_to_inference_start_seconds
+        ),
     }
     for key in ("action", "device"):
         _text(payload, key)
@@ -221,6 +226,11 @@ def encode_inference_metrics(
         _nonnegative_float(payload, key)
     if not isinstance(first_inference, bool):
         raise ValueError("first_inference must be true or false")
+    _nonnegative_float(
+        payload,
+        "result_to_inference_start_seconds",
+        optional=True,
+    )
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
@@ -250,4 +260,9 @@ def decode_inference_metrics(payload):
         _nonnegative_float(mapping, "rgb_depth_delta_seconds"),
         _nonnegative_float(mapping, "invalid_depth_fraction"),
         first_inference,
+        _nonnegative_float(
+            mapping,
+            "result_to_inference_start_seconds",
+            optional=True,
+        ),
     )

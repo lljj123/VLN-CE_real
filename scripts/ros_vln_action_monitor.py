@@ -56,6 +56,7 @@ CSV_FIELDS = [
     "reason",
     "device",
     "first_inference",
+    "result_to_inference_start_ms",
     "image_conversion_ms",
     "preprocess_ms",
     "model_ms",
@@ -118,6 +119,7 @@ class ActionMetricsRecorder:
             "reason": "",
             "device": "",
             "first_inference": False,
+            "result_to_inference_start_ms": None,
             "image_conversion_ms": None,
             "preprocess_ms": None,
             "model_ms": None,
@@ -196,6 +198,12 @@ class ActionMetricsRecorder:
                 "action_count": metrics.action_count,
                 "device": metrics.device,
                 "first_inference": metrics.first_inference,
+                "result_to_inference_start_ms": (
+                    None
+                    if metrics.result_to_inference_start_seconds is None
+                    else 1000.0
+                    * metrics.result_to_inference_start_seconds
+                ),
                 "image_conversion_ms": (
                     1000.0 * metrics.image_conversion_seconds
                 ),
@@ -325,8 +333,8 @@ class ActionMonitorGui:
         self.recorder = recorder
         self.root = tk.Tk()
         self.root.title("VLN Action Timing Monitor")
-        self.root.geometry("1240x760")
-        self.root.minsize(960, 600)
+        self.root.geometry("1400x850")
+        self.root.minsize(1100, 700)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
 
         self.summary_variables = {
@@ -337,6 +345,7 @@ class ActionMonitorGui:
                 "last_action",
                 "avg_inference",
                 "avg_execution",
+                "avg_gap",
                 "device",
             )
         }
@@ -354,6 +363,7 @@ class ActionMonitorGui:
             ("Last action", "last_action"),
             ("Avg inference", "avg_inference"),
             ("Avg execution", "avg_execution"),
+            ("Avg result→infer", "avg_gap"),
             ("Device", "device"),
         ]
         for index, (title, key) in enumerate(cards):
@@ -372,6 +382,7 @@ class ActionMonitorGui:
             "seq",
             "action",
             "mode",
+            "gap",
             "convert",
             "preprocess",
             "model",
@@ -392,6 +403,7 @@ class ActionMonitorGui:
             "seq": "Seq",
             "action": "Action",
             "mode": "Control mode",
+            "gap": "Result→infer ms",
             "convert": "Convert ms",
             "preprocess": "Preprocess ms",
             "model": "Model ms",
@@ -406,6 +418,7 @@ class ActionMonitorGui:
             "seq": 55,
             "action": 125,
             "mode": 125,
+            "gap": 115,
             "convert": 90,
             "preprocess": 100,
             "model": 85,
@@ -436,25 +449,34 @@ class ActionMonitorGui:
         table_frame.columnconfigure(0, weight=1)
         self.table.tag_configure("failed", foreground="#b00020")
         self.table.tag_configure("succeeded", foreground="#087f23")
+        self.table.tag_configure("stopped", foreground="#087f23")
 
         charts = ttk.Frame(root, padding=(10, 0, 10, 10))
-        charts.pack(fill="both")
+        charts.pack(fill="both", expand=True)
+        cycle_frame = ttk.LabelFrame(
+            charts, text="End-to-end action timeline (seconds)", padding=5
+        )
+        cycle_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
         inference_frame = ttk.LabelFrame(
-            charts, text="Inference total (ms)", padding=5
+            charts, text="Inference detail timeline (milliseconds)", padding=5
         )
-        inference_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
-        execution_frame = ttk.LabelFrame(
-            charts, text="Execution time (s)", padding=5
+        inference_frame.pack(
+            side="left", fill="both", expand=True, padx=(5, 0)
         )
-        execution_frame.pack(side="left", fill="both", expand=True, padx=(5, 0))
-        self.inference_canvas = self.tk.Canvas(
-            inference_frame, height=190, background="#ffffff"
+        self.cycle_timeline_canvas = self.tk.Canvas(
+            cycle_frame, height=260, background="#ffffff"
         )
-        self.execution_canvas = self.tk.Canvas(
-            execution_frame, height=190, background="#ffffff"
+        self.inference_timeline_canvas = self.tk.Canvas(
+            inference_frame, height=260, background="#ffffff"
         )
-        self.inference_canvas.pack(fill="both", expand=True)
-        self.execution_canvas.pack(fill="both", expand=True)
+        self.cycle_timeline_canvas.pack(fill="both", expand=True)
+        self.inference_timeline_canvas.pack(fill="both", expand=True)
+        self.cycle_timeline_canvas.bind(
+            "<Configure>", self._timeline_resized
+        )
+        self.inference_timeline_canvas.bind(
+            "<Configure>", self._timeline_resized
+        )
 
         ttk.Label(
             root,
@@ -501,6 +523,7 @@ class ActionMonitorGui:
                     record["sequence"] if record["sequence"] is not None else "-",
                     record["action"],
                     record["control_mode"] or "-",
+                    _display_value(record["result_to_inference_start_ms"]),
                     _display_value(record["image_conversion_ms"]),
                     _display_value(record["preprocess_ms"]),
                     _display_value(record["model_ms"]),
@@ -530,6 +553,11 @@ class ActionMonitorGui:
             for r in completed
             if r["execution_seconds"] is not None
         ]
+        gap_values = [
+            r["result_to_inference_start_ms"]
+            for r in records
+            if r["result_to_inference_start_ms"] is not None
+        ]
         last = records[-1] if records else None
         self.summary_variables["status"].set(
             "RUNNING" if not rospy.is_shutdown() else "STOPPED"
@@ -550,34 +578,71 @@ class ActionMonitorGui:
             if execution_values
             else "-"
         )
+        self.summary_variables["avg_gap"].set(
+            "{:.2f} ms".format(sum(gap_values) / len(gap_values))
+            if gap_values
+            else "-"
+        )
         self.summary_variables["device"].set(
             last["device"] if last and last["device"] else "-"
         )
-        self._draw_chart(
-            self.inference_canvas,
+        self._draw_timeline(
+            self.cycle_timeline_canvas,
             records,
-            "inference_total_ms",
-            "#3267a8",
+            self._cycle_timeline_phases,
+            "s",
         )
-        self._draw_chart(
-            self.execution_canvas,
-            completed,
-            "execution_seconds",
-            "#d87a16",
+        self._draw_timeline(
+            self.inference_timeline_canvas,
+            records,
+            self._inference_timeline_phases,
+            "ms",
         )
 
-    def _draw_chart(self, canvas, records, field, color):
-        canvas.delete("all")
-        width = max(canvas.winfo_width(), 300)
-        height = max(canvas.winfo_height(), 160)
-        margin_left = 45
-        margin_bottom = 25
-        values = [
-            (record["sequence"], record[field])
-            for record in records[-20:]
-            if record[field] is not None
+    def _timeline_resized(self, _event):
+        self.recorder.changed = True
+
+    @staticmethod
+    def _cycle_timeline_phases(record):
+        wait_seconds = (record["result_to_inference_start_ms"] or 0.0) / 1000.0
+        inference_seconds = (record["inference_total_ms"] or 0.0) / 1000.0
+        execution_seconds = record["execution_seconds"] or 0.0
+        command_seconds = record["command_to_result_seconds"] or 0.0
+        dispatch_seconds = max(0.0, command_seconds - execution_seconds)
+        return [
+            ("Wait fresh RGB-D", "#6f42c1", wait_seconds),
+            ("Inference", "#3267a8", inference_seconds),
+            ("ROS dispatch", "#6c757d", dispatch_seconds),
+            ("Chassis execution", "#d87a16", execution_seconds),
         ]
-        if not values:
+
+    @staticmethod
+    def _inference_timeline_phases(record):
+        return [
+            ("Image conversion", "#148ea1", record["image_conversion_ms"] or 0.0),
+            ("Preprocess", "#2f8f4e", record["preprocess_ms"] or 0.0),
+            ("Model", "#3267a8", record["model_ms"] or 0.0),
+        ]
+
+    @staticmethod
+    def _format_timeline_value(value, unit, compact=False):
+        if unit == "s":
+            return ("{:.2f}s" if compact else "{:.3f} s").format(value)
+        return ("{:.0f}ms" if compact else "{:.1f} ms").format(value)
+
+    def _draw_timeline(self, canvas, records, phase_builder, unit):
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 480)
+        height = max(canvas.winfo_height(), 220)
+        visible_records = records[-8:]
+        timeline_rows = [
+            (record, phase_builder(record)) for record in visible_records
+        ]
+        maximum = max(
+            [sum(value for _, _, value in phases) for _, phases in timeline_rows]
+            or [0.0]
+        )
+        if not timeline_rows or maximum <= 0.0:
             canvas.create_text(
                 width / 2,
                 height / 2,
@@ -585,49 +650,123 @@ class ActionMonitorGui:
                 fill="#666666",
             )
             return
-        maximum = max(value for _, value in values)
-        maximum = max(maximum, 0.001)
-        canvas.create_line(
-            margin_left,
-            10,
-            margin_left,
-            height - margin_bottom,
-            fill="#888888",
-        )
-        canvas.create_line(
-            margin_left,
-            height - margin_bottom,
-            width - 5,
-            height - margin_bottom,
-            fill="#888888",
-        )
-        canvas.create_text(
-            margin_left - 5,
-            10,
-            text="{:.2f}".format(maximum),
-            anchor="e",
-            fill="#555555",
-        )
-        usable_width = width - margin_left - 10
-        bar_width = max(4.0, usable_width / max(len(values), 1) * 0.65)
-        step = usable_width / max(len(values), 1)
-        plot_height = height - margin_bottom - 18
-        for index, (sequence, value) in enumerate(values):
-            x_center = margin_left + (index + 0.5) * step
-            bar_height = plot_height * value / maximum
+
+        margin_left = 145
+        margin_right = 72
+        legend_y = 13
+        plot_top = 38
+        margin_bottom = 28
+        plot_width = max(1.0, width - margin_left - margin_right)
+        plot_bottom = height - margin_bottom
+        row_height = max(18.0, (plot_bottom - plot_top) / len(timeline_rows))
+        bar_height = min(18.0, row_height * 0.62)
+
+        legend_x = margin_left
+        for label, color, _value in timeline_rows[0][1]:
             canvas.create_rectangle(
-                x_center - bar_width / 2,
-                height - margin_bottom - bar_height,
-                x_center + bar_width / 2,
-                height - margin_bottom,
+                legend_x,
+                legend_y - 5,
+                legend_x + 10,
+                legend_y + 5,
                 fill=color,
                 outline="",
             )
             canvas.create_text(
-                x_center,
-                height - margin_bottom + 10,
-                text=str(sequence if sequence is not None else index + 1),
+                legend_x + 14,
+                legend_y,
+                text=label,
+                anchor="w",
+                fill="#444444",
+                font=("TkDefaultFont", 8),
+            )
+            legend_x += 24 + 6.3 * len(label)
+
+        for tick in range(5):
+            fraction = tick / 4.0
+            x = margin_left + fraction * plot_width
+            canvas.create_line(
+                x,
+                plot_top,
+                x,
+                plot_bottom,
+                fill="#e4e4e4",
+            )
+            canvas.create_text(
+                x,
+                height - 10,
+                text=self._format_timeline_value(
+                    maximum * fraction,
+                    unit,
+                    compact=True,
+                ),
                 fill="#555555",
+                font=("TkDefaultFont", 8),
+            )
+
+        for index, (record, phases) in enumerate(timeline_rows):
+            y_center = plot_top + (index + 0.5) * row_height
+            sequence = (
+                record["sequence"]
+                if record["sequence"] is not None
+                else record["action_count"] or index + 1
+            )
+            label_color = (
+                "#b00020"
+                if record["status"] == "failed"
+                else "#087f23"
+                if record["status"] in ("succeeded", "stopped")
+                else "#333333"
+            )
+            canvas.create_text(
+                margin_left - 8,
+                y_center,
+                text="#{} {}".format(sequence, record["action"]),
+                anchor="e",
+                fill=label_color,
+                font=("TkDefaultFont", 8),
+            )
+            canvas.create_rectangle(
+                margin_left,
+                y_center - bar_height / 2,
+                margin_left + plot_width,
+                y_center + bar_height / 2,
+                fill="#f2f2f2",
+                outline="",
+            )
+            x = margin_left
+            total = 0.0
+            for _phase_label, color, value in phases:
+                value = max(0.0, float(value))
+                segment_width = plot_width * value / maximum
+                if segment_width > 0.0:
+                    canvas.create_rectangle(
+                        x,
+                        y_center - bar_height / 2,
+                        x + segment_width,
+                        y_center + bar_height / 2,
+                        fill=color,
+                        outline="",
+                    )
+                    if segment_width >= 48.0:
+                        canvas.create_text(
+                            x + segment_width / 2,
+                            y_center,
+                            text=self._format_timeline_value(
+                                value,
+                                unit,
+                                compact=True,
+                            ),
+                            fill="#ffffff",
+                            font=("TkDefaultFont", 8),
+                        )
+                x += segment_width
+                total += value
+            canvas.create_text(
+                width - 5,
+                y_center,
+                text=self._format_timeline_value(total, unit),
+                anchor="e",
+                fill="#333333",
                 font=("TkDefaultFont", 8),
             )
 

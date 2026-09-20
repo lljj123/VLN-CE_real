@@ -498,19 +498,31 @@ class RosVlnInferenceNode:
             now = time.monotonic()
             if self._check_action_result_timeout(now):
                 return
+            previous_result_received_at = None
             if self.args.wait_for_action_result:
                 with self.state_lock:
                     command_in_flight = self.pending_command is not None
                     process_frames_after = self.process_frames_after
                 if command_in_flight or pair_arrival_time < process_frames_after:
                     continue
+                if process_frames_after > 0.0:
+                    previous_result_received_at = process_frames_after
             if (
                 self.args.min_action_interval > 0.0
                 and now - self.last_inference_start_time
                 < self.args.min_action_interval
             ):
                 continue
-            self.last_inference_start_time = now
+            inference_started_at = time.monotonic()
+            self.last_inference_start_time = inference_started_at
+            result_to_inference_start_seconds = (
+                None
+                if previous_result_received_at is None
+                else max(
+                    0.0,
+                    inference_started_at - previous_result_received_at,
+                )
+            )
 
             try:
                 pipeline_started = time.perf_counter()
@@ -590,6 +602,9 @@ class RosVlnInferenceNode:
                 rgb_depth_delta_seconds=timestamp_delta_ms / 1000.0,
                 invalid_depth_fraction=invalid_fraction,
                 first_inference=(self.action_count == 1),
+                result_to_inference_start_seconds=(
+                    result_to_inference_start_seconds
+                ),
             )
             self.metrics_publisher.publish(String(data=metrics_payload))
             if command_payload is not None:
@@ -597,7 +612,8 @@ class RosVlnInferenceNode:
             rospy.loginfo(
                 "action=%s sequence=%s count=%d inference_ms=%.2f "
                 "model_ms=%.2f preprocess_ms=%.2f conversion_ms=%.2f "
-                "stamp_delta_ms=%.2f processed_invalid_depth=%.2f%%",
+                "result_to_inference_ms=%s stamp_delta_ms=%.2f "
+                "processed_invalid_depth=%.2f%%",
                 action_name,
                 command_sequence,
                 self.action_count,
@@ -605,6 +621,13 @@ class RosVlnInferenceNode:
                 1000.0 * model_seconds,
                 1000.0 * preprocess_seconds,
                 1000.0 * conversion_seconds,
+                (
+                    "-"
+                    if result_to_inference_start_seconds is None
+                    else "{:.2f}".format(
+                        1000.0 * result_to_inference_start_seconds
+                    )
+                ),
                 timestamp_delta_ms,
                 100.0 * invalid_fraction,
             )

@@ -89,6 +89,7 @@ class ActionProtocolTest(unittest.TestCase):
             rgb_depth_delta_seconds=0.004,
             invalid_depth_fraction=0.03,
             first_inference=False,
+            result_to_inference_start_seconds=0.087,
         )
         self.assertEqual(
             decode_inference_metrics(payload),
@@ -104,6 +105,7 @@ class ActionProtocolTest(unittest.TestCase):
                 0.004,
                 0.03,
                 False,
+                0.087,
             ),
         )
 
