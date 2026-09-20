@@ -225,9 +225,13 @@ rostopic pub -1 /vln/action std_msgs/String 'data: "MOVE_FORWARD"'
 
 - 图像消息转换、RGB-D 预处理、模型 forward 和推理总耗时；
 - 底盘实际执行时间、命令到结果的端到端时间；
+- 上一个 action 发布零速度结束，到下一个 action 首次发布非零速度开始的精确
+  间隔；界面以粗体 `END→NEXT START` 重点显示，首个 action 显示 `-`；
 - 上一个 action 结果到下一次推理真正开始的间隔（首个 action 显示 `-`）；
 - 里程计控制模式、目标距离/角度、实际完成进度和结果原因；
-- 最近动作的端到端横向时间轴，以及单独放大的推理阶段时间轴。
+- 一条覆盖完整 episode 的连续横向时间轴，按时间顺序显示全部 action；
+- 点击总时间轴上的 action 后，第二条横轴放大它的 RGB-D 等待、队列调度、
+  图像转换、预处理和模型推理时间。
 
 每次运行会把完整记录写到：
 
@@ -238,7 +242,8 @@ rostopic pub -1 /vln/action std_msgs/String 'data: "MOVE_FORWARD"'
 
 监控配置位于 `config/vln_inference.json` 的 `monitor` 段。没有桌面
 `DISPLAY`、Tk 无法初始化或显式关闭 GUI 时，监控节点会以无界面模式继续写
-CSV/JSONL，不影响底盘控制。常用临时覆盖：
+CSV/JSONL，不影响底盘控制。`history_size` 为 `0` 时 GUI 保留完整 episode。
+常用临时覆盖：
 
 ```bash
 # 不显示窗口，只记录文件

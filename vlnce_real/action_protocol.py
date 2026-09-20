@@ -28,6 +28,7 @@ class ActionResult(NamedTuple):
     target_value: Optional[float]
     progress_value: Optional[float]
     target_unit: Optional[str]
+    previous_action_end_to_start_seconds: Optional[float]
 
 
 class InferenceMetrics(NamedTuple):
@@ -136,6 +137,7 @@ def encode_action_result(
     target_value=None,
     progress_value=None,
     target_unit=None,
+    previous_action_end_to_start_seconds=None,
 ):
     payload = {
         "version": PROTOCOL_VERSION,
@@ -148,6 +150,9 @@ def encode_action_result(
         "target_value": target_value,
         "progress_value": progress_value,
         "target_unit": target_unit,
+        "previous_action_end_to_start_seconds": (
+            previous_action_end_to_start_seconds
+        ),
     }
     for key in ("action", "status", "reason"):
         _text(payload, key)
@@ -156,6 +161,11 @@ def encode_action_result(
     _nonnegative_float(payload, "target_value", optional=True)
     _nonnegative_float(payload, "progress_value", optional=True)
     _optional_text(payload, "target_unit")
+    _nonnegative_float(
+        payload,
+        "previous_action_end_to_start_seconds",
+        optional=True,
+    )
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
 
@@ -180,6 +190,11 @@ def decode_action_result(payload):
         _nonnegative_float(mapping, "target_value", optional=True),
         _nonnegative_float(mapping, "progress_value", optional=True),
         _optional_text(mapping, "target_unit"),
+        _nonnegative_float(
+            mapping,
+            "previous_action_end_to_start_seconds",
+            optional=True,
+        ),
     )
 
 

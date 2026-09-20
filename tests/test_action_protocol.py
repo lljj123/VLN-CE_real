@@ -46,6 +46,7 @@ class ActionProtocolTest(unittest.TestCase):
                 None,
                 None,
                 None,
+                None,
             ),
         )
 
@@ -60,6 +61,7 @@ class ActionProtocolTest(unittest.TestCase):
             target_value=15.0,
             progress_value=14.7,
             target_unit="deg",
+            previous_action_end_to_start_seconds=0.123,
         )
         self.assertEqual(
             decode_action_result(payload),
@@ -73,7 +75,22 @@ class ActionProtocolTest(unittest.TestCase):
                 15.0,
                 14.7,
                 "deg",
+                0.123,
             ),
+        )
+
+    def test_old_result_without_execution_gap_remains_compatible(self):
+        payload = (
+            '{"version":1,"sequence":2,"action":"TURN_RIGHT",'
+            '"status":"succeeded","reason":"done",'
+            '"execution_seconds":0.5,"control_mode":"open_loop",'
+            '"target_value":0.5,"progress_value":0.5,'
+            '"target_unit":"s"}'
+        )
+        self.assertIsNone(
+            decode_action_result(
+                payload
+            ).previous_action_end_to_start_seconds
         )
 
     def test_inference_metrics_round_trip(self):

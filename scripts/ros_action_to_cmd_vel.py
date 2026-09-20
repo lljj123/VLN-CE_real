@@ -361,9 +361,11 @@ class ActionToCmdVelNode:
         self.active_target_value = None
         self.active_progress_value = None
         self.active_target_unit = None
+        self.active_previous_action_end_to_start_seconds = None
         self.active_motion = None
         self.active_controller = None
         self.active_until = 0.0
+        self.last_action_finished_at = None
         self.last_action_time = None
         self.watchdog_reported = False
         self.stop_repeats_remaining = args.stop_publish_count
@@ -424,6 +426,27 @@ class ActionToCmdVelNode:
             return None
         return pose, arrival_time, ros_stamp
 
+    def _publish_active_velocity(self, linear_x, angular_z) -> None:
+        """Publish motion and capture the prior-end to current-start gap."""
+        if (
+            self.active_previous_action_end_to_start_seconds is None
+            and self.last_action_finished_at is not None
+            and (abs(linear_x) > 0.0 or abs(angular_z) > 0.0)
+        ):
+            motion_started_at = time.monotonic()
+            self.active_previous_action_end_to_start_seconds = max(
+                0.0,
+                motion_started_at - self.last_action_finished_at,
+            )
+            rospy.loginfo(
+                "action=%s sequence=%s previous_end_to_start_ms=%.2f",
+                self.active_action,
+                self.active_command_sequence,
+                1000.0
+                * self.active_previous_action_end_to_start_seconds,
+            )
+        self.velocity_publisher.publish(make_twist(linear_x, angular_z))
+
     def _publish_result(
         self,
         sequence,
@@ -435,6 +458,7 @@ class ActionToCmdVelNode:
         target_value=None,
         progress_value=None,
         target_unit=None,
+        previous_action_end_to_start_seconds=None,
     ) -> None:
         payload = encode_action_result(
             sequence=sequence,
@@ -446,6 +470,9 @@ class ActionToCmdVelNode:
             target_value=target_value,
             progress_value=progress_value,
             target_unit=target_unit,
+            previous_action_end_to_start_seconds=(
+                previous_action_end_to_start_seconds
+            ),
         )
         self.result_publisher.publish(String(data=payload))
 
@@ -618,6 +645,7 @@ class ActionToCmdVelNode:
         self.active_action = action
         self.active_command_sequence = command_sequence
         self.active_started_at = now
+        self.active_previous_action_end_to_start_seconds = None
         self.active_motion = motion
         self.active_controller = controller
         self.active_until = now + (
@@ -673,6 +701,9 @@ class ActionToCmdVelNode:
         target_value = self.active_target_value
         progress_value = self.active_progress_value
         target_unit = self.active_target_unit
+        previous_action_end_to_start_seconds = (
+            self.active_previous_action_end_to_start_seconds
+        )
         self.active_action = None
         self.active_command_sequence = None
         self.active_started_at = None
@@ -680,11 +711,13 @@ class ActionToCmdVelNode:
         self.active_target_value = None
         self.active_progress_value = None
         self.active_target_unit = None
+        self.active_previous_action_end_to_start_seconds = None
         self.active_motion = None
         self.active_controller = None
         self.active_until = 0.0
         self.stop_repeats_remaining = self.args.stop_publish_count
         self.velocity_publisher.publish(make_twist())
+        self.last_action_finished_at = time.monotonic()
         if action is not None:
             self._publish_result(
                 command_sequence,
@@ -696,6 +729,9 @@ class ActionToCmdVelNode:
                 target_value=target_value,
                 progress_value=progress_value,
                 target_unit=target_unit,
+                previous_action_end_to_start_seconds=(
+                    previous_action_end_to_start_seconds
+                ),
             )
             rospy.loginfo("action=%s finished (%s); chassis stopped", action, reason)
 
@@ -802,11 +838,9 @@ class ActionToCmdVelNode:
                                     step.remaining,
                                 )
                             else:
-                                self.velocity_publisher.publish(
-                                    make_twist(
-                                        step.linear_x,
-                                        step.angular_z,
-                                    )
+                                self._publish_active_velocity(
+                                    step.linear_x,
+                                    step.angular_z,
                                 )
                     elif now >= self.active_until:
                         self.active_progress_value = self.active_target_value
@@ -818,11 +852,9 @@ class ActionToCmdVelNode:
                             self.active_target_value,
                             max(0.0, now - self.active_started_at),
                         )
-                        self.velocity_publisher.publish(
-                            make_twist(
-                                self.active_motion.linear_x,
-                                self.active_motion.angular_z,
-                            )
+                        self._publish_active_velocity(
+                            self.active_motion.linear_x,
+                            self.active_motion.angular_z,
                         )
                 elif self.stop_repeats_remaining > 0:
                     self.velocity_publisher.publish(make_twist())

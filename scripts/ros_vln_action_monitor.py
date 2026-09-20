@@ -56,6 +56,7 @@ CSV_FIELDS = [
     "reason",
     "device",
     "first_inference",
+    "previous_action_end_to_start_ms",
     "result_to_inference_start_ms",
     "fresh_rgbd_wait_ms",
     "rgbd_queue_ms",
@@ -121,6 +122,7 @@ class ActionMetricsRecorder:
             "reason": "",
             "device": "",
             "first_inference": False,
+            "previous_action_end_to_start_ms": None,
             "result_to_inference_start_ms": None,
             "fresh_rgbd_wait_ms": None,
             "rgbd_queue_ms": None,
@@ -244,6 +246,12 @@ class ActionMetricsRecorder:
                 "status": result.status,
                 "reason": result.reason,
                 "execution_seconds": result.execution_seconds,
+                "previous_action_end_to_start_ms": (
+                    None
+                    if result.previous_action_end_to_start_seconds is None
+                    else 1000.0
+                    * result.previous_action_end_to_start_seconds
+                ),
                 "control_mode": result.control_mode or "",
                 "target_value": result.target_value,
                 "progress_value": result.progress_value,
@@ -361,6 +369,7 @@ class ActionMonitorGui:
                 "status",
                 "actions",
                 "last_action",
+                "latest_execution_gap",
                 "avg_inference",
                 "avg_execution",
                 "avg_gap",
@@ -379,6 +388,7 @@ class ActionMonitorGui:
             ("Pipeline", "status"),
             ("Actions", "actions"),
             ("Last action", "last_action"),
+            ("END→NEXT START", "latest_execution_gap"),
             ("Avg inference", "avg_inference"),
             ("Avg execution", "avg_execution"),
             ("Avg result→infer", "avg_gap"),
@@ -387,11 +397,17 @@ class ActionMonitorGui:
         for index, (title, key) in enumerate(cards):
             card = ttk.LabelFrame(summary, text=title, padding=(12, 8))
             card.grid(row=0, column=index, padx=4, sticky="nsew")
-            ttk.Label(
-                card,
-                textvariable=self.summary_variables[key],
-                font=("TkDefaultFont", 11, "bold"),
-            ).pack()
+            label_options = {
+                "textvariable": self.summary_variables[key],
+                "font": (
+                    "TkDefaultFont",
+                    14 if key == "latest_execution_gap" else 11,
+                    "bold",
+                ),
+            }
+            if key == "latest_execution_gap":
+                label_options["foreground"] = "#000000"
+            ttk.Label(card, **label_options).pack()
             summary.columnconfigure(index, weight=1)
 
         table_frame = ttk.LabelFrame(root, text="Action records", padding=8)
@@ -400,6 +416,7 @@ class ActionMonitorGui:
             "seq",
             "action",
             "mode",
+            "execution_gap",
             "gap",
             "convert",
             "preprocess",
@@ -421,6 +438,7 @@ class ActionMonitorGui:
             "seq": "Seq",
             "action": "Action",
             "mode": "Control mode",
+            "execution_gap": "END→START ms",
             "gap": "Result→infer ms",
             "convert": "Convert ms",
             "preprocess": "Preprocess ms",
@@ -436,6 +454,7 @@ class ActionMonitorGui:
             "seq": 55,
             "action": 125,
             "mode": 125,
+            "execution_gap": 125,
             "gap": 115,
             "convert": 90,
             "preprocess": 100,
@@ -546,6 +565,9 @@ class ActionMonitorGui:
                     record["sequence"] if record["sequence"] is not None else "-",
                     record["action"],
                     record["control_mode"] or "-",
+                    _display_value(
+                        record["previous_action_end_to_start_ms"]
+                    ),
                     _display_value(record["result_to_inference_start_ms"]),
                     _display_value(record["image_conversion_ms"]),
                     _display_value(record["preprocess_ms"]),
@@ -581,6 +603,14 @@ class ActionMonitorGui:
             for r in records
             if r["result_to_inference_start_ms"] is not None
         ]
+        latest_execution_gap = next(
+            (
+                r["previous_action_end_to_start_ms"]
+                for r in reversed(records)
+                if r["previous_action_end_to_start_ms"] is not None
+            ),
+            None,
+        )
         last = records[-1] if records else None
         self.summary_variables["status"].set(
             "RUNNING" if not rospy.is_shutdown() else "STOPPED"
@@ -590,6 +620,11 @@ class ActionMonitorGui:
         )
         self.summary_variables["last_action"].set(
             last["action"] if last else "-"
+        )
+        self.summary_variables["latest_execution_gap"].set(
+            "{:.2f} ms".format(latest_execution_gap)
+            if latest_execution_gap is not None
+            else "-"
         )
         self.summary_variables["avg_inference"].set(
             "{:.2f} ms".format(sum(inference_values) / len(inference_values))
@@ -646,8 +681,15 @@ class ActionMonitorGui:
         wait_seconds = (record["result_to_inference_start_ms"] or 0.0) / 1000.0
         inference_seconds = (record["inference_total_ms"] or 0.0) / 1000.0
         execution_seconds = record["execution_seconds"] or 0.0
-        command_seconds = record["command_to_result_seconds"] or 0.0
-        dispatch_seconds = max(0.0, command_seconds - execution_seconds)
+        exact_gap_ms = record["previous_action_end_to_start_ms"]
+        if exact_gap_ms is not None:
+            dispatch_seconds = max(
+                0.0,
+                exact_gap_ms / 1000.0 - wait_seconds - inference_seconds,
+            )
+        else:
+            command_seconds = record["command_to_result_seconds"] or 0.0
+            dispatch_seconds = max(0.0, command_seconds - execution_seconds)
         return [
             ("Fresh RGB-D", "#b59ad8", wait_seconds),
             ("Inference", "#3267a8", inference_seconds),
@@ -825,6 +867,24 @@ class ActionMonitorGui:
                     width=2,
                 )
                 action_segment = (marker_x - 1, marker_x + 1)
+            exact_gap_ms = record["previous_action_end_to_start_ms"]
+            if exact_gap_ms is not None and action_segment[0] > cycle_x_start:
+                canvas.create_rectangle(
+                    cycle_x_start,
+                    bar_top - 2,
+                    action_segment[0],
+                    bar_bottom + 2,
+                    outline="#000000",
+                    width=2,
+                )
+                if action_segment[0] - cycle_x_start >= 72.0:
+                    canvas.create_text(
+                        (cycle_x_start + action_segment[0]) / 2,
+                        bar_top - 9,
+                        text="END→START {:.1f}ms".format(exact_gap_ms),
+                        fill="#000000",
+                        font=("TkDefaultFont", 8, "bold"),
+                    )
             action_width = action_segment[1] - action_segment[0]
             if action_width >= 34.0:
                 short_action = {
@@ -882,6 +942,12 @@ class ActionMonitorGui:
             if record["execution_seconds"] is None
             else "{:.3f}s".format(record["execution_seconds"])
         )
+        execution_gap_ms = record["previous_action_end_to_start_ms"]
+        execution_gap_text = (
+            "END→START -"
+            if execution_gap_ms is None
+            else "END→START {:.2f} ms".format(execution_gap_ms)
+        )
         canvas.create_text(
             12,
             13,
@@ -894,6 +960,14 @@ class ActionMonitorGui:
             anchor="w",
             fill="#222222",
             font=("TkDefaultFont", 9, "bold"),
+        )
+        canvas.create_text(
+            width - 12,
+            13,
+            text=execution_gap_text,
+            anchor="e",
+            fill="#000000",
+            font=("TkDefaultFont", 12, "bold"),
         )
         if total <= 0.0:
             canvas.create_text(
