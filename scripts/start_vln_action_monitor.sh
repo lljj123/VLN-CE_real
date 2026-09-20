@@ -72,9 +72,9 @@ history_size = monitor.get("history_size")
 if (
     isinstance(history_size, bool)
     or not isinstance(history_size, int)
-    or history_size <= 0
+    or history_size < 0
 ):
-    raise ValueError("monitor.history_size must be a positive integer")
+    raise ValueError("monitor.history_size must be an integer >= 0")
 values.append(str(history_size))
 print("\n".join(values))
 PY
@@ -100,8 +100,8 @@ if [[ -z "${VLN_MONITOR_OUTPUT_DIRECTORY}" ]]; then
     echo "[start_vln_action_monitor] Output directory cannot be empty." >&2
     exit 1
 fi
-if [[ ! "${VLN_MONITOR_HISTORY_SIZE}" =~ ^[1-9][0-9]*$ ]]; then
-    echo "[start_vln_action_monitor] History size must be positive." >&2
+if [[ ! "${VLN_MONITOR_HISTORY_SIZE}" =~ ^[0-9]+$ ]]; then
+    echo "[start_vln_action_monitor] History size must be >= 0." >&2
     exit 1
 fi
 

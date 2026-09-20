@@ -523,6 +523,18 @@ class RosVlnInferenceNode:
                     inference_started_at - previous_result_received_at,
                 )
             )
+            fresh_rgbd_wait_seconds = (
+                None
+                if previous_result_received_at is None
+                else max(
+                    0.0,
+                    pair_arrival_time - previous_result_received_at,
+                )
+            )
+            rgbd_queue_seconds = max(
+                0.0,
+                inference_started_at - pair_arrival_time,
+            )
 
             try:
                 pipeline_started = time.perf_counter()
@@ -605,6 +617,8 @@ class RosVlnInferenceNode:
                 result_to_inference_start_seconds=(
                     result_to_inference_start_seconds
                 ),
+                fresh_rgbd_wait_seconds=fresh_rgbd_wait_seconds,
+                rgbd_queue_seconds=rgbd_queue_seconds,
             )
             self.metrics_publisher.publish(String(data=metrics_payload))
             if command_payload is not None:
@@ -612,6 +626,7 @@ class RosVlnInferenceNode:
             rospy.loginfo(
                 "action=%s sequence=%s count=%d inference_ms=%.2f "
                 "model_ms=%.2f preprocess_ms=%.2f conversion_ms=%.2f "
+                "fresh_rgbd_wait_ms=%s rgbd_queue_ms=%.2f "
                 "result_to_inference_ms=%s stamp_delta_ms=%.2f "
                 "processed_invalid_depth=%.2f%%",
                 action_name,
@@ -621,6 +636,12 @@ class RosVlnInferenceNode:
                 1000.0 * model_seconds,
                 1000.0 * preprocess_seconds,
                 1000.0 * conversion_seconds,
+                (
+                    "-"
+                    if fresh_rgbd_wait_seconds is None
+                    else "{:.2f}".format(1000.0 * fresh_rgbd_wait_seconds)
+                ),
+                1000.0 * rgbd_queue_seconds,
                 (
                     "-"
                     if result_to_inference_start_seconds is None

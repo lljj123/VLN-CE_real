@@ -43,6 +43,8 @@ class InferenceMetrics(NamedTuple):
     invalid_depth_fraction: float
     first_inference: bool
     result_to_inference_start_seconds: Optional[float]
+    fresh_rgbd_wait_seconds: Optional[float]
+    rgbd_queue_seconds: Optional[float]
 
 
 def _sequence(value):
@@ -194,6 +196,8 @@ def encode_inference_metrics(
     invalid_depth_fraction,
     first_inference,
     result_to_inference_start_seconds=None,
+    fresh_rgbd_wait_seconds=None,
+    rgbd_queue_seconds=None,
 ):
     payload = {
         "version": PROTOCOL_VERSION,
@@ -211,6 +215,8 @@ def encode_inference_metrics(
         "result_to_inference_start_seconds": (
             result_to_inference_start_seconds
         ),
+        "fresh_rgbd_wait_seconds": fresh_rgbd_wait_seconds,
+        "rgbd_queue_seconds": rgbd_queue_seconds,
     }
     for key in ("action", "device"):
         _text(payload, key)
@@ -229,6 +235,16 @@ def encode_inference_metrics(
     _nonnegative_float(
         payload,
         "result_to_inference_start_seconds",
+        optional=True,
+    )
+    _nonnegative_float(
+        payload,
+        "fresh_rgbd_wait_seconds",
+        optional=True,
+    )
+    _nonnegative_float(
+        payload,
+        "rgbd_queue_seconds",
         optional=True,
     )
     return json.dumps(payload, sort_keys=True, separators=(",", ":"))
@@ -263,6 +279,16 @@ def decode_inference_metrics(payload):
         _nonnegative_float(
             mapping,
             "result_to_inference_start_seconds",
+            optional=True,
+        ),
+        _nonnegative_float(
+            mapping,
+            "fresh_rgbd_wait_seconds",
+            optional=True,
+        ),
+        _nonnegative_float(
+            mapping,
+            "rgbd_queue_seconds",
             optional=True,
         ),
     )
