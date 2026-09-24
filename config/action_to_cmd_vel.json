@@ -6,7 +6,7 @@
     "odom": "/odom"
   },
   "control": {
-    "publish_rate_hz": 20.0,
+    "publish_rate_hz": 40.0,
     "watchdog_timeout_s": 10.0,
     "stop_publish_count": 3,
     "use_odom": true,

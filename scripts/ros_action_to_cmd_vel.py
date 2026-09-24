@@ -56,6 +56,7 @@ from vlnce_real.action_protocol import (  # noqa: E402
     decode_action_command,
     encode_action_result,
 )
+from vlnce_real.control_timing import WakeableRate  # noqa: E402
 from vlnce_real.odom_control import (  # noqa: E402
     ClosedLoopMotion,
     OdomControlSettings,
@@ -369,6 +370,7 @@ class ActionToCmdVelNode:
         self.last_action_time = None
         self.watchdog_reported = False
         self.stop_repeats_remaining = args.stop_publish_count
+        self.control_rate = WakeableRate(args.publish_rate)
 
         # Construct the publisher before the subscriber so an early STOP can
         # always be forwarded to the chassis.
@@ -574,6 +576,10 @@ class ActionToCmdVelNode:
                     "action=STOP sequence=%s cmd_vel=(0.000 m/s, 0.000 rad/s)",
                     command.sequence,
                 )
+        # Do not make a newly accepted action wait for the next periodic tick.
+        # WakeableRate's generation counter preserves a wake-up that occurs
+        # immediately before the control loop begins waiting.
+        self.control_rate.wake()
 
     def _start_pending_action(self, now: float) -> None:
         action = self.pending_action
@@ -762,7 +768,7 @@ class ActionToCmdVelNode:
             "Action execution results: %s (std_msgs/String)",
             self.args.action_result_topic,
         )
-        rate = rospy.Rate(self.args.publish_rate)
+        wake_generation = self.control_rate.snapshot()
 
         while not rospy.is_shutdown():
             now = time.monotonic()
@@ -860,14 +866,12 @@ class ActionToCmdVelNode:
                     self.velocity_publisher.publish(make_twist())
                     self.stop_repeats_remaining -= 1
 
-            try:
-                rate.sleep()
-            except rospy.ROSInterruptException:
-                break
+            wake_generation = self.control_rate.wait(wake_generation)
 
     def _on_shutdown(self) -> None:
         # Publish several zeros because a single final TCPROS packet may be
         # lost while ROS connections are shutting down.
+        self.control_rate.wake()
         with self.lock:
             if self.active_action is not None:
                 self._stop_active_action(

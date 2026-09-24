@@ -137,8 +137,10 @@ cd /path/to/VLN-CE_real
 ./scripts/start_vln_with_base.sh
 ```
 
-转换节点订阅 `/vln/action` 的英文动作或带序号 JSON 命令，并以 20 Hz 连续发布
-`geometry_msgs/Twist`。速度和动作尺度集中保存在
+转换节点订阅 `/vln/action` 的英文动作或带序号 JSON 命令，并在动作期间默认以
+40 Hz 连续发布 `geometry_msgs/Twist`。新 action 会立即唤醒控制循环，不需要等待
+下一个 25 ms 周期；周期循环继续负责里程计闭环、底盘 watchdog 和速度刷新。
+速度和动作尺度集中保存在
 [`config/action_to_cmd_vel.json`](config/action_to_cmd_vel.json)，左右转可以
 分别标定。默认映射如下：
 
